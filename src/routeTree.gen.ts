@@ -11,6 +11,18 @@
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as AppRouteImport } from './routes/app'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as AppIndexRouteImport } from './routes/app.index'
+import { Route as AppUploadRouteImport } from './routes/app.upload'
+import { Route as AppTimelineRouteImport } from './routes/app.timeline'
+import { Route as AppSettingsRouteImport } from './routes/app.settings'
+import { Route as AppReportsRouteImport } from './routes/app.reports'
+import { Route as AppObligationsRouteImport } from './routes/app.obligations'
+import { Route as AppContractsRouteImport } from './routes/app.contracts'
+import { Route as AppCompareRouteImport } from './routes/app.compare'
+import { Route as AppClausesRouteImport } from './routes/app.clauses'
+import { Route as AppChatRouteImport } from './routes/app.chat'
+import { Route as AppAnalysisRouteImport } from './routes/app.analysis'
+import { Route as AppContractsIdRouteImport } from './routes/app.contracts.$id'
 
 const AppRoute = AppRouteImport.update({
   id: '/app',
@@ -22,31 +34,168 @@ const IndexRoute = IndexRouteImport.update({
   path: '/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const AppIndexRoute = AppIndexRouteImport.update({
+  id: '/',
+  path: '/',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppUploadRoute = AppUploadRouteImport.update({
+  id: '/upload',
+  path: '/upload',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppTimelineRoute = AppTimelineRouteImport.update({
+  id: '/timeline',
+  path: '/timeline',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppSettingsRoute = AppSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppReportsRoute = AppReportsRouteImport.update({
+  id: '/reports',
+  path: '/reports',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppObligationsRoute = AppObligationsRouteImport.update({
+  id: '/obligations',
+  path: '/obligations',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppContractsRoute = AppContractsRouteImport.update({
+  id: '/contracts',
+  path: '/contracts',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppCompareRoute = AppCompareRouteImport.update({
+  id: '/compare',
+  path: '/compare',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppClausesRoute = AppClausesRouteImport.update({
+  id: '/clauses',
+  path: '/clauses',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppChatRoute = AppChatRouteImport.update({
+  id: '/chat',
+  path: '/chat',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAnalysisRoute = AppAnalysisRouteImport.update({
+  id: '/analysis',
+  path: '/analysis',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppContractsIdRoute = AppContractsIdRouteImport.update({
+  id: '/$id',
+  path: '/$id',
+  getParentRoute: () => AppContractsRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/app': typeof AppRoute
+  '/app': typeof AppRouteWithChildren
+  '/app/analysis': typeof AppAnalysisRoute
+  '/app/chat': typeof AppChatRoute
+  '/app/clauses': typeof AppClausesRoute
+  '/app/compare': typeof AppCompareRoute
+  '/app/contracts': typeof AppContractsRouteWithChildren
+  '/app/obligations': typeof AppObligationsRoute
+  '/app/reports': typeof AppReportsRoute
+  '/app/settings': typeof AppSettingsRoute
+  '/app/timeline': typeof AppTimelineRoute
+  '/app/upload': typeof AppUploadRoute
+  '/app/': typeof AppIndexRoute
+  '/app/contracts/$id': typeof AppContractsIdRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/app': typeof AppRoute
+  '/app/analysis': typeof AppAnalysisRoute
+  '/app/chat': typeof AppChatRoute
+  '/app/clauses': typeof AppClausesRoute
+  '/app/compare': typeof AppCompareRoute
+  '/app/contracts': typeof AppContractsRouteWithChildren
+  '/app/obligations': typeof AppObligationsRoute
+  '/app/reports': typeof AppReportsRoute
+  '/app/settings': typeof AppSettingsRoute
+  '/app/timeline': typeof AppTimelineRoute
+  '/app/upload': typeof AppUploadRoute
+  '/app': typeof AppIndexRoute
+  '/app/contracts/$id': typeof AppContractsIdRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/app': typeof AppRoute
+  '/app': typeof AppRouteWithChildren
+  '/app/analysis': typeof AppAnalysisRoute
+  '/app/chat': typeof AppChatRoute
+  '/app/clauses': typeof AppClausesRoute
+  '/app/compare': typeof AppCompareRoute
+  '/app/contracts': typeof AppContractsRouteWithChildren
+  '/app/obligations': typeof AppObligationsRoute
+  '/app/reports': typeof AppReportsRoute
+  '/app/settings': typeof AppSettingsRoute
+  '/app/timeline': typeof AppTimelineRoute
+  '/app/upload': typeof AppUploadRoute
+  '/app/': typeof AppIndexRoute
+  '/app/contracts/$id': typeof AppContractsIdRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
-  fullPaths: '/' | '/app'
+  fullPaths:
+    | '/'
+    | '/app'
+    | '/app/analysis'
+    | '/app/chat'
+    | '/app/clauses'
+    | '/app/compare'
+    | '/app/contracts'
+    | '/app/obligations'
+    | '/app/reports'
+    | '/app/settings'
+    | '/app/timeline'
+    | '/app/upload'
+    | '/app/'
+    | '/app/contracts/$id'
   fileRoutesByTo: FileRoutesByTo
-  to: '/' | '/app'
-  id: '__root__' | '/' | '/app'
+  to:
+    | '/'
+    | '/app/analysis'
+    | '/app/chat'
+    | '/app/clauses'
+    | '/app/compare'
+    | '/app/contracts'
+    | '/app/obligations'
+    | '/app/reports'
+    | '/app/settings'
+    | '/app/timeline'
+    | '/app/upload'
+    | '/app'
+    | '/app/contracts/$id'
+  id:
+    | '__root__'
+    | '/'
+    | '/app'
+    | '/app/analysis'
+    | '/app/chat'
+    | '/app/clauses'
+    | '/app/compare'
+    | '/app/contracts'
+    | '/app/obligations'
+    | '/app/reports'
+    | '/app/settings'
+    | '/app/timeline'
+    | '/app/upload'
+    | '/app/'
+    | '/app/contracts/$id'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  AppRoute: typeof AppRoute
+  AppRoute: typeof AppRouteWithChildren
 }
 
 declare module '@tanstack/react-router' {
@@ -65,12 +214,138 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof IndexRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/app/': {
+      id: '/app/'
+      path: '/'
+      fullPath: '/app/'
+      preLoaderRoute: typeof AppIndexRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/upload': {
+      id: '/app/upload'
+      path: '/upload'
+      fullPath: '/app/upload'
+      preLoaderRoute: typeof AppUploadRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/timeline': {
+      id: '/app/timeline'
+      path: '/timeline'
+      fullPath: '/app/timeline'
+      preLoaderRoute: typeof AppTimelineRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/settings': {
+      id: '/app/settings'
+      path: '/settings'
+      fullPath: '/app/settings'
+      preLoaderRoute: typeof AppSettingsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/reports': {
+      id: '/app/reports'
+      path: '/reports'
+      fullPath: '/app/reports'
+      preLoaderRoute: typeof AppReportsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/obligations': {
+      id: '/app/obligations'
+      path: '/obligations'
+      fullPath: '/app/obligations'
+      preLoaderRoute: typeof AppObligationsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/contracts': {
+      id: '/app/contracts'
+      path: '/contracts'
+      fullPath: '/app/contracts'
+      preLoaderRoute: typeof AppContractsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/compare': {
+      id: '/app/compare'
+      path: '/compare'
+      fullPath: '/app/compare'
+      preLoaderRoute: typeof AppCompareRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/clauses': {
+      id: '/app/clauses'
+      path: '/clauses'
+      fullPath: '/app/clauses'
+      preLoaderRoute: typeof AppClausesRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/chat': {
+      id: '/app/chat'
+      path: '/chat'
+      fullPath: '/app/chat'
+      preLoaderRoute: typeof AppChatRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/analysis': {
+      id: '/app/analysis'
+      path: '/analysis'
+      fullPath: '/app/analysis'
+      preLoaderRoute: typeof AppAnalysisRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/app/contracts/$id': {
+      id: '/app/contracts/$id'
+      path: '/$id'
+      fullPath: '/app/contracts/$id'
+      preLoaderRoute: typeof AppContractsIdRouteImport
+      parentRoute: typeof AppContractsRoute
+    }
   }
 }
 
+interface AppContractsRouteChildren {
+  AppContractsIdRoute: typeof AppContractsIdRoute
+}
+
+const AppContractsRouteChildren: AppContractsRouteChildren = {
+  AppContractsIdRoute: AppContractsIdRoute,
+}
+
+const AppContractsRouteWithChildren = AppContractsRoute._addFileChildren(
+  AppContractsRouteChildren,
+)
+
+interface AppRouteChildren {
+  AppAnalysisRoute: typeof AppAnalysisRoute
+  AppChatRoute: typeof AppChatRoute
+  AppClausesRoute: typeof AppClausesRoute
+  AppCompareRoute: typeof AppCompareRoute
+  AppContractsRoute: typeof AppContractsRouteWithChildren
+  AppObligationsRoute: typeof AppObligationsRoute
+  AppReportsRoute: typeof AppReportsRoute
+  AppSettingsRoute: typeof AppSettingsRoute
+  AppTimelineRoute: typeof AppTimelineRoute
+  AppUploadRoute: typeof AppUploadRoute
+  AppIndexRoute: typeof AppIndexRoute
+}
+
+const AppRouteChildren: AppRouteChildren = {
+  AppAnalysisRoute: AppAnalysisRoute,
+  AppChatRoute: AppChatRoute,
+  AppClausesRoute: AppClausesRoute,
+  AppCompareRoute: AppCompareRoute,
+  AppContractsRoute: AppContractsRouteWithChildren,
+  AppObligationsRoute: AppObligationsRoute,
+  AppReportsRoute: AppReportsRoute,
+  AppSettingsRoute: AppSettingsRoute,
+  AppTimelineRoute: AppTimelineRoute,
+  AppUploadRoute: AppUploadRoute,
+  AppIndexRoute: AppIndexRoute,
+}
+
+const AppRouteWithChildren = AppRoute._addFileChildren(AppRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  AppRoute: AppRoute,
+  AppRoute: AppRouteWithChildren,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)
