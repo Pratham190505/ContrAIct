@@ -1,11 +1,22 @@
-import { createFileRoute, Link, Outlet, useRouterState } from "@tanstack/react-router";
+import { createFileRoute, Link, Outlet, redirect, useNavigate, useRouterState } from "@tanstack/react-router";
 import { SidebarInset, SidebarProvider, SidebarTrigger } from "@/components/ui/sidebar";
 import { AppSidebar } from "@/components/app-sidebar";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
-import { Sparkles } from "lucide-react";
+import { Loader2, Sparkles } from "lucide-react";
+import { useEffect } from "react";
+import { useAuth } from "@/contexts/auth-context";
+import { getStoredToken } from "@/lib/auth-storage";
 
 export const Route = createFileRoute("/app")({
+  beforeLoad: ({ location }) => {
+    if (typeof window !== "undefined" && !getStoredToken()) {
+      throw redirect({
+        to: "/login",
+        search: { redirect: location.href },
+      });
+    }
+  },
   component: AppLayout,
 });
 
@@ -24,10 +35,29 @@ const titles: Record<string, string> = {
 };
 
 function AppLayout() {
+  const navigate = useNavigate();
+  const { isAuthenticated, isLoading } = useAuth();
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const title =
     titles[pathname] ??
     (pathname.startsWith("/app/contracts/") ? "Contract detail" : "ContrAIct");
+
+  useEffect(() => {
+    if (!isLoading && !isAuthenticated) {
+      void navigate({ to: "/login", search: { redirect: pathname } });
+    }
+  }, [isAuthenticated, isLoading, navigate, pathname]);
+
+  if (isLoading || !isAuthenticated) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-background">
+        <div className="flex items-center gap-3 rounded-lg border bg-card px-4 py-3 text-sm shadow-sm">
+          <Loader2 className="h-4 w-4 animate-spin text-primary" />
+          Securing workspace
+        </div>
+      </div>
+    );
+  }
 
   return (
     <SidebarProvider>

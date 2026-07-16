@@ -1,0 +1,188 @@
+// ContrAIct — Prisma Schema
+// Database: PostgreSQL
+// Run: npx prisma migrate dev --name init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// User
+// ─────────────────────────────────────────────
+model User {
+  id           String     @id @default(uuid())
+  email        String     @unique
+  passwordHash String
+  name         String
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  contracts    Contract[]
+
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────
+// Contract  (mirrors frontend Contract type)
+// ─────────────────────────────────────────────
+model Contract {
+  id          String         @id @default(uuid())
+  userId      String
+  user        User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name        String                          // original filename / display name
+  type        String                          // Employment | Rental | NDA | Freelance | etc.
+  party       String                          // counter-party name
+  pages       Int            @default(0)
+  status      ContractStatus @default(PROCESSING)
+
+  // AI Analysis outputs
+  riskScore   Int            @default(0)       // 0-100
+  confidence  Float          @default(0)       // 0.0-1.0
+  summary     String?        @db.Text
+  missing     String[]                         // missing clauses array
+  negotiation String[]                         // negotiation tips array
+
+  // Raw extracted text stored for re-analysis
+  rawText     String?        @db.Text
+
+  // File storage
+  filePath    String                           // path on disk / object store key
+  fileSize    Int            @default(0)       // bytes
+  mimeType    String
+
+  uploadedAt  DateTime       @default(now())
+  analyzedAt  DateTime?
+  updatedAt   DateTime       @updatedAt
+
+  // Relations
+  clauses     Clause[]
+  obligations Obligation[]
+  dates       ContractDate[]
+  messages    ChatMessage[]
+  reports     Report[]
+
+  @@map("contracts")
+}
+
+enum ContractStatus {
+  PROCESSING
+  ANALYZED
+  FAILED
+}
+
+// ─────────────────────────────────────────────
+// Clause  (mirrors frontend Clause type)
+// ─────────────────────────────────────────────
+model Clause {
+  id           String    @id @default(uuid())
+  contractId   String
+  contract     Contract  @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  title        String
+  category     String                          // Restrictions | IP | Compensation | Termination | etc.
+  original     String    @db.Text             // raw clause text
+  plain        String    @db.Text             // plain-English explanation
+  risk         RiskLevel
+  reason       String    @db.Text
+  consequences String    @db.Text
+  negotiation  String    @db.Text
+  confidence   Float     @default(0)
+
+  createdAt    DateTime  @default(now())
+
+  @@map("clauses")
+}
+
+enum RiskLevel {
+  low
+  medium
+  high
+}
+
+// ─────────────────────────────────────────────
+// Obligation
+// ─────────────────────────────────────────────
+model Obligation {
+  id         String   @id @default(uuid())
+  contractId String
+  contract   Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  party      String                            // Employee | Company | Tenant | Landlord | etc.
+  obligation String   @db.Text
+  due        String?                           // "Ongoing" | "Day 31" | "On exit" | etc.
+
+  createdAt  DateTime @default(now())
+
+  @@map("obligations")
+}
+
+// ─────────────────────────────────────────────
+// ContractDate  (timeline events)
+// ─────────────────────────────────────────────
+model ContractDate {
+  id         String    @id @default(uuid())
+  contractId String
+  contract   Contract  @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  label      String                            // "Start date" | "Stock vesting cliff" | etc.
+  date       String                            // ISO date string "YYYY-MM-DD"
+  kind       DateKind
+
+  createdAt  DateTime  @default(now())
+
+  @@map("contract_dates")
+}
+
+enum DateKind {
+  renewal
+  expiry
+  payment
+  review
+}
+
+// ─────────────────────────────────────────────
+// ChatMessage
+// ─────────────────────────────────────────────
+model ChatMessage {
+  id         String      @id @default(uuid())
+  contractId String
+  contract   Contract    @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  role       MessageRole
+  text       String      @db.Text
+  cites      String[]                          // ["§ 4.2 Signing Bonus", "§ 9.1 Non-Compete"]
+
+  // RAG metadata
+  confidence  Float?                           // critic confidence score
+  attempts    Int         @default(0)          // reformulator retry count
+  grounded    Boolean     @default(true)
+
+  createdAt   DateTime    @default(now())
+
+  @@map("chat_messages")
+}
+
+enum MessageRole {
+  user
+  assistant
+}
+
+// ─────────────────────────────────────────────
+// Report  (generated PDF reports)
+// ─────────────────────────────────────────────
+model Report {
+  id         String   @id @default(uuid())
+  contractId String
+  contract   Contract @relation(fields: [contractId], references: [id], onDelete: Cascade)
+
+  filePath   String
+  fileSize   Int      @default(0)
+  generatedAt DateTime @default(now())
+
+  @@map("reports")
+}
