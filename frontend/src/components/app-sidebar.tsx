@@ -6,7 +6,6 @@ import {
   ShieldAlert,
   ListChecks,
   MessageSquare,
-  GitCompare,
   Calendar,
   Scale,
   FileDown,
@@ -43,7 +42,6 @@ const analysisItems = [
   { title: "Analysis", to: "/app/analysis", icon: ShieldAlert },
   { title: "Clauses", to: "/app/clauses", icon: ListChecks },
   { title: "Chat", to: "/app/chat", icon: MessageSquare },
-  { title: "Compare", to: "/app/compare", icon: GitCompare },
 ];
 
 const trackItems = [
@@ -58,6 +56,7 @@ export function AppSidebar() {
   const { signOut, user } = useAuth();
   const collapsed = state === "collapsed";
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const search = useRouterState({ select: (s) => s.location.search });
 
   const isActive = (to: string) =>
     to === "/app" ? pathname === "/app" : pathname.startsWith(to);
@@ -70,7 +69,7 @@ export function AppSidebar() {
           {items.map((item) => (
             <SidebarMenuItem key={item.to}>
               <SidebarMenuButton asChild isActive={isActive(item.to)} tooltip={item.title}>
-                <Link to={item.to} className="flex items-center gap-2">
+                <Link to={item.to} search={search} className="flex items-center gap-2">
                   <item.icon className="h-4 w-4 shrink-0" />
                   <span>{item.title}</span>
                 </Link>
@@ -121,7 +120,7 @@ export function AppSidebar() {
             <SidebarMenu>
               <SidebarMenuItem>
                 <SidebarMenuButton asChild isActive={isActive("/app/settings")} tooltip="Settings">
-                  <Link to="/app/settings" className="flex items-center gap-2">
+                  <Link to="/app/settings" search={search} className="flex items-center gap-2">
                     <Settings className="h-4 w-4 shrink-0" />
                     <span>Settings</span>
                   </Link>

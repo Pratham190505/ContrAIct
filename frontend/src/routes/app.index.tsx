@@ -1,18 +1,21 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
 import { ArrowRight, AlertTriangle, FileText, Calendar, ShieldAlert } from "lucide-react";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
+import { useEffect } from "react";
+import { toast } from "sonner";
 
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { RiskGauge } from "@/components/app/risk-gauge";
 import { RiskBadge } from "@/components/app/risk-badge";
 import { ConfidenceMeter } from "@/components/app/confidence-meter";
-import { contracts, riskCategories } from "@/lib/mock-contracts";
+import { getContracts } from "@/api/contracts";
 
 export const Route = createFileRoute("/app/")({
   head: () => ({
     meta: [
-      { title: "Dashboard – ContrAIct" },
+      { title: "Dashboard - ContrAIct" },
       { name: "description", content: "Overview of your analyzed contracts, risk scores, and upcoming deadlines." },
     ],
   }),
@@ -29,100 +32,128 @@ const COLORS = [
 ];
 
 function Dashboard() {
+  const { data: contracts = [], isError, error } = useQuery({
+    queryKey: ["contracts"],
+    queryFn: getContracts,
+  });
+
+  useEffect(() => {
+    if (isError) {
+      toast.error(error instanceof Error ? error.message : "Failed to load dashboard");
+    }
+  }, [error, isError]);
+
   const featured = contracts[0];
+  const analyzed = contracts.filter((c) => c.status === "analyzed").length;
+  const processing = contracts.filter((c) => c.status === "processing").length;
+  const avgRisk = contracts.length
+    ? Math.round(contracts.reduce((sum, c) => sum + c.riskScore, 0) / contracts.length)
+    : 0;
   const totalHigh = contracts.reduce(
     (n, c) => n + c.clauses.filter((cl) => cl.risk === "high").length,
     0,
   );
   const upcoming = contracts.flatMap((c) => c.dates).slice(0, 4);
+  const categoryRiskData = Array.from(
+    contracts
+      .flatMap((c) => c.clauses)
+      .reduce((map, clause) => map.set(clause.category, (map.get(clause.category) ?? 0) + 1), new Map<string, number>()),
+    ([name, value]) => ({ name, value }),
+  );
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="font-display text-3xl font-semibold">Welcome back, Jordan</h1>
         <p className="text-sm text-muted-foreground">
-          {contracts.length} contracts analyzed · {totalHigh} high-risk clauses flagged this month.
+          {analyzed} contracts analyzed · {totalHigh} high-risk clauses flagged this month.
         </p>
       </div>
 
       {/* KPI cards */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <Kpi label="Contracts analyzed" value={String(contracts.length)} icon={FileText} />
-        <Kpi label="Avg risk score" value="56" hint="Medium" icon={ShieldAlert} />
+        <Kpi label="Contracts analyzed" value={String(analyzed)} hint={`${processing} processing`} icon={FileText} />
+        <Kpi label="Avg risk score" value={String(avgRisk)} hint={avgRisk >= 70 ? "High" : avgRisk >= 40 ? "Medium" : "Low"} icon={ShieldAlert} />
         <Kpi label="High-risk clauses" value={String(totalHigh)} hint="Across all docs" icon={AlertTriangle} />
         <Kpi label="Upcoming deadlines" value={String(upcoming.length)} hint="Next 90 days" icon={Calendar} />
       </div>
 
-      <div className="grid gap-4 lg:grid-cols-3">
-        {/* Featured contract */}
-        <Card className="p-6 lg:col-span-2">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="text-xs text-muted-foreground">Most recent</p>
-              <h2 className="font-display text-xl font-semibold">{featured.name}</h2>
-              <p className="mt-1 max-w-xl text-sm text-muted-foreground">{featured.summary}</p>
-            </div>
-            <RiskBadge level="high" />
-          </div>
-          <div className="mt-6 grid gap-6 sm:grid-cols-[auto_1fr] sm:items-center">
-            <RiskGauge score={featured.riskScore} />
-            <div className="space-y-4">
-              <ConfidenceMeter value={featured.confidence} />
-              <div className="grid grid-cols-3 gap-2 text-xs">
-                <Stat label="Clauses" value={String(featured.clauses.length)} />
-                <Stat label="Obligations" value={String(featured.obligations.length)} />
-                <Stat label="Key dates" value={String(featured.dates.length)} />
+      {featured ? (
+        <div className="grid gap-4 lg:grid-cols-3">
+          {/* Featured contract */}
+          <Card className="p-6 lg:col-span-2">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-xs text-muted-foreground">Most recent</p>
+                <h2 className="font-display text-xl font-semibold">{featured.name}</h2>
+                <p className="mt-1 max-w-xl text-sm text-muted-foreground">{featured.summary}</p>
               </div>
-              <Button asChild className="brand-gradient text-primary-foreground">
-                <Link to="/app/analysis">
-                  Open analysis
-                  <ArrowRight className="ml-2 h-4 w-4" />
-                </Link>
-              </Button>
+              <RiskBadge level={featured.riskScore >= 70 ? "high" : featured.riskScore >= 40 ? "medium" : "low"} />
             </div>
-          </div>
-        </Card>
+            <div className="mt-6 grid gap-6 sm:grid-cols-[auto_1fr] sm:items-center">
+              <RiskGauge score={featured.riskScore} />
+              <div className="space-y-4">
+                <ConfidenceMeter value={featured.confidence} />
+                <div className="grid grid-cols-3 gap-2 text-xs">
+                  <Stat label="Clauses" value={String(featured.clauses.length)} />
+                  <Stat label="Obligations" value={String(featured.obligations.length)} />
+                  <Stat label="Key dates" value={String(featured.dates.length)} />
+                </div>
+                <Button asChild className="brand-gradient text-primary-foreground">
+                  <Link to="/app/analysis" search={{ contractId: featured.id }}>
+                    Open analysis
+                    <ArrowRight className="ml-2 h-4 w-4" />
+                  </Link>
+                </Button>
+              </div>
+            </div>
+          </Card>
 
-        {/* Risk donut */}
+          {/* Risk donut */}
+          <Card className="p-6">
+            <p className="text-xs text-muted-foreground">Risk by category</p>
+            <h3 className="font-display text-base font-semibold">Where the risk lives</h3>
+            <div className="mt-2 h-56">
+              <ResponsiveContainer width="100%" height="100%">
+                <PieChart>
+                  <Pie
+                    data={categoryRiskData}
+                    dataKey="value"
+                    nameKey="name"
+                    innerRadius={50}
+                    outerRadius={80}
+                    paddingAngle={2}
+                  >
+                    {categoryRiskData.map((_, i) => (
+                      <Cell key={i} fill={COLORS[i % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip
+                    contentStyle={{
+                      background: "var(--color-popover)",
+                      border: "1px solid var(--color-border)",
+                      borderRadius: 8,
+                      fontSize: 12,
+                    }}
+                  />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-1 text-[11px]">
+              {categoryRiskData.map((c, i) => (
+                <div key={c.name} className="flex items-center gap-1.5">
+                  <span className="h-2 w-2 rounded-full" style={{ background: COLORS[i % COLORS.length] }} />
+                  <span className="text-muted-foreground">{c.name}</span>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+      ) : (
         <Card className="p-6">
-          <p className="text-xs text-muted-foreground">Risk by category</p>
-          <h3 className="font-display text-base font-semibold">Where the risk lives</h3>
-          <div className="mt-2 h-56">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={riskCategories}
-                  dataKey="value"
-                  nameKey="name"
-                  innerRadius={50}
-                  outerRadius={80}
-                  paddingAngle={2}
-                >
-                  {riskCategories.map((_, i) => (
-                    <Cell key={i} fill={COLORS[i % COLORS.length]} />
-                  ))}
-                </Pie>
-                <Tooltip
-                  contentStyle={{
-                    background: "var(--color-popover)",
-                    border: "1px solid var(--color-border)",
-                    borderRadius: 8,
-                    fontSize: 12,
-                  }}
-                />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="mt-3 grid grid-cols-2 gap-1 text-[11px]">
-            {riskCategories.map((c, i) => (
-              <div key={c.name} className="flex items-center gap-1.5">
-                <span className="h-2 w-2 rounded-full" style={{ background: COLORS[i % COLORS.length] }} />
-                <span className="text-muted-foreground">{c.name}</span>
-              </div>
-            ))}
-          </div>
+          <p className="text-sm text-muted-foreground">No contracts found.</p>
         </Card>
-      </div>
+      )}
 
       {/* Recent contracts */}
       <Card className="p-6">
@@ -153,6 +184,7 @@ function Dashboard() {
                     <Link
                       to="/app/contracts/$id"
                       params={{ id: c.id }}
+                      search={{ contractId: c.id }}
                       className="hover:text-primary"
                     >
                       {c.name}

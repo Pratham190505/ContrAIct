@@ -17,6 +17,7 @@ Order:
   7. negotiation tips — derived from clauses
 """
 from typing import Any, Dict
+import time
 
 from langchain_community.vectorstores import Chroma
 
@@ -99,6 +100,7 @@ def run_full_analysis(
         }
     """
     print(f"[analyzer] Starting full analysis for contract {contract_id}")
+    analysis_started_at = time.perf_counter()
 
     # ── 1. Contract metadata ───────────────────────────────────────────────
     contract_type = detect_contract_type(raw_text)
@@ -107,12 +109,16 @@ def run_full_analysis(
 
     # ── 2. Summary ────────────────────────────────────────────────────────
     print("[analyzer] Generating summary...")
+    summary_started_at = time.perf_counter()
     summary = generate_summary(raw_text)
+    print(f"[SUMMARY] contractId={contract_id} elapsed={time.perf_counter() - summary_started_at:.2f}s")
 
     # ── 3. Clause extraction (heaviest step) ──────────────────────────────
     print("[analyzer] Extracting clauses...")
+    clauses_started_at = time.perf_counter()
     clauses = extract_clauses(raw_text, vectorstore, contract_id)
     print(f"[analyzer] Found {len(clauses)} clauses")
+    print(f"[CLAUSES] contractId={contract_id} elapsed={time.perf_counter() - clauses_started_at:.2f}s")
 
     # ── 4. Risk scoring ───────────────────────────────────────────────────
     risk_score = compute_risk_score(clauses)
@@ -135,6 +141,7 @@ def run_full_analysis(
     negotiation = extract_negotiation_tips(raw_text, clauses)
 
     print(f"[analyzer] Analysis complete for {contract_id}")
+    print(f"[ANALYSIS DONE] contractId={contract_id} elapsed={time.perf_counter() - analysis_started_at:.2f}s")
 
     return {
         "type":        contract_type,

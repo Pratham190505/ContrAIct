@@ -1,0 +1,3 @@
+ALTER TYPE "ContractStatus" ADD VALUE IF NOT EXISTS 'UPLOADING';
+
+ALTER TABLE "contracts" ADD COLUMN IF NOT EXISTS "failureReason" TEXT;

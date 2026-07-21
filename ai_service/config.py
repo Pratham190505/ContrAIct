@@ -32,6 +32,10 @@ VECTORSTORE_BASE_DIR = os.getenv("VECTORSTORE_BASE_DIR", os.path.join(BASE_DIR, 
 
 # ── Backend callback ───────────────────────────────────────────────────────────
 BACKEND_URL: str = os.getenv("BACKEND_URL", "http://localhost:5000")
+AI_SERVICE_SECRET: str = os.getenv("AI_SERVICE_SECRET", "")
+
+if not AI_SERVICE_SECRET:
+    raise EnvironmentError("AI_SERVICE_SECRET is not set. Copy .env.example to .env and add the shared secret.")
 
 # Ensure directories exist
 os.makedirs(VECTORSTORE_BASE_DIR, exist_ok=True)

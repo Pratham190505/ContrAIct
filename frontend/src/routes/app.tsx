@@ -7,8 +7,10 @@ import { Loader2, Sparkles } from "lucide-react";
 import { useEffect } from "react";
 import { useAuth } from "@/contexts/auth-context";
 import { getStoredToken } from "@/lib/auth-storage";
+import { contractSelectionSearchSchema } from "@/lib/contract-selection";
 
 export const Route = createFileRoute("/app")({
+  validateSearch: contractSelectionSearchSchema,
   beforeLoad: ({ location }) => {
     if (typeof window !== "undefined" && !getStoredToken()) {
       throw redirect({
@@ -27,7 +29,6 @@ const titles: Record<string, string> = {
   "/app/analysis": "Analysis",
   "/app/clauses": "Clauses",
   "/app/chat": "Chat with contract",
-  "/app/compare": "Compare contracts",
   "/app/timeline": "Timeline",
   "/app/obligations": "Obligations",
   "/app/reports": "Reports",

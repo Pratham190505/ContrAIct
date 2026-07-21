@@ -50,7 +50,8 @@ export interface ContractDTO {
   pages: number;
   riskScore: number;
   confidence: number;
-  status: "analyzed" | "processing";
+  status: "uploading" | "analyzed" | "processing" | "failed";
+  failureReason?: string;
   summary: string;
   clauses: ClauseDTO[];
   obligations: ObligationDTO[];

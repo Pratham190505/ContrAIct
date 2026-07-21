@@ -7,7 +7,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { getMe, login, logout, signup, type AuthUser, type LoginPayload, type SignupPayload } from "@/lib/auth-api";
+import { getMe, login, logout, signup, type AuthUser, type LoginPayload, type SignupPayload } from "@/api/auth";
 import { clearStoredToken, getStoredToken, setStoredToken } from "@/lib/auth-storage";
 
 type AuthContextValue = {

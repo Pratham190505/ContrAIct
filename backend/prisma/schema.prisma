@@ -44,6 +44,7 @@ model Contract {
   riskScore   Int            @default(0)       // 0-100
   confidence  Float          @default(0)       // 0.0-1.0
   summary     String?        @db.Text
+  failureReason String?      @db.Text
   missing     String[]                         // missing clauses array
   negotiation String[]                         // negotiation tips array
 
@@ -70,6 +71,7 @@ model Contract {
 }
 
 enum ContractStatus {
+  UPLOADING
   PROCESSING
   ANALYZED
   FAILED

@@ -20,7 +20,6 @@ import { Route as AppSettingsRouteImport } from './routes/app.settings'
 import { Route as AppReportsRouteImport } from './routes/app.reports'
 import { Route as AppObligationsRouteImport } from './routes/app.obligations'
 import { Route as AppContractsRouteImport } from './routes/app.contracts'
-import { Route as AppCompareRouteImport } from './routes/app.compare'
 import { Route as AppClausesRouteImport } from './routes/app.clauses'
 import { Route as AppChatRouteImport } from './routes/app.chat'
 import { Route as AppAnalysisRouteImport } from './routes/app.analysis'
@@ -81,11 +80,6 @@ const AppContractsRoute = AppContractsRouteImport.update({
   path: '/contracts',
   getParentRoute: () => AppRoute,
 } as any)
-const AppCompareRoute = AppCompareRouteImport.update({
-  id: '/compare',
-  path: '/compare',
-  getParentRoute: () => AppRoute,
-} as any)
 const AppClausesRoute = AppClausesRouteImport.update({
   id: '/clauses',
   path: '/clauses',
@@ -115,7 +109,6 @@ export interface FileRoutesByFullPath {
   '/app/analysis': typeof AppAnalysisRoute
   '/app/chat': typeof AppChatRoute
   '/app/clauses': typeof AppClausesRoute
-  '/app/compare': typeof AppCompareRoute
   '/app/contracts': typeof AppContractsRouteWithChildren
   '/app/obligations': typeof AppObligationsRoute
   '/app/reports': typeof AppReportsRoute
@@ -132,7 +125,6 @@ export interface FileRoutesByTo {
   '/app/analysis': typeof AppAnalysisRoute
   '/app/chat': typeof AppChatRoute
   '/app/clauses': typeof AppClausesRoute
-  '/app/compare': typeof AppCompareRoute
   '/app/contracts': typeof AppContractsRouteWithChildren
   '/app/obligations': typeof AppObligationsRoute
   '/app/reports': typeof AppReportsRoute
@@ -151,7 +143,6 @@ export interface FileRoutesById {
   '/app/analysis': typeof AppAnalysisRoute
   '/app/chat': typeof AppChatRoute
   '/app/clauses': typeof AppClausesRoute
-  '/app/compare': typeof AppCompareRoute
   '/app/contracts': typeof AppContractsRouteWithChildren
   '/app/obligations': typeof AppObligationsRoute
   '/app/reports': typeof AppReportsRoute
@@ -171,7 +162,6 @@ export interface FileRouteTypes {
     | '/app/analysis'
     | '/app/chat'
     | '/app/clauses'
-    | '/app/compare'
     | '/app/contracts'
     | '/app/obligations'
     | '/app/reports'
@@ -188,7 +178,6 @@ export interface FileRouteTypes {
     | '/app/analysis'
     | '/app/chat'
     | '/app/clauses'
-    | '/app/compare'
     | '/app/contracts'
     | '/app/obligations'
     | '/app/reports'
@@ -206,7 +195,6 @@ export interface FileRouteTypes {
     | '/app/analysis'
     | '/app/chat'
     | '/app/clauses'
-    | '/app/compare'
     | '/app/contracts'
     | '/app/obligations'
     | '/app/reports'
@@ -303,13 +291,6 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppContractsRouteImport
       parentRoute: typeof AppRoute
     }
-    '/app/compare': {
-      id: '/app/compare'
-      path: '/compare'
-      fullPath: '/app/compare'
-      preLoaderRoute: typeof AppCompareRouteImport
-      parentRoute: typeof AppRoute
-    }
     '/app/clauses': {
       id: '/app/clauses'
       path: '/clauses'
@@ -357,7 +338,6 @@ interface AppRouteChildren {
   AppAnalysisRoute: typeof AppAnalysisRoute
   AppChatRoute: typeof AppChatRoute
   AppClausesRoute: typeof AppClausesRoute
-  AppCompareRoute: typeof AppCompareRoute
   AppContractsRoute: typeof AppContractsRouteWithChildren
   AppObligationsRoute: typeof AppObligationsRoute
   AppReportsRoute: typeof AppReportsRoute
@@ -371,7 +351,6 @@ const AppRouteChildren: AppRouteChildren = {
   AppAnalysisRoute: AppAnalysisRoute,
   AppChatRoute: AppChatRoute,
   AppClausesRoute: AppClausesRoute,
-  AppCompareRoute: AppCompareRoute,
   AppContractsRoute: AppContractsRouteWithChildren,
   AppObligationsRoute: AppObligationsRoute,
   AppReportsRoute: AppReportsRoute,

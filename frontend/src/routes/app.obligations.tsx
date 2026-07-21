@@ -1,12 +1,18 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { toast } from "sonner";
+import { contractSelectionSearchSchema } from "@/lib/contract-selection";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { contracts } from "@/lib/mock-contracts";
+import { getObligations } from "@/api/analysis";
+import { getContracts } from "@/api/contracts";
 
 export const Route = createFileRoute("/app/obligations")({
+  validateSearch: contractSelectionSearchSchema,
   head: () => ({
     meta: [
-      { title: "Obligations – ContrAIct" },
+      { title: "Obligations - ContrAIct" },
       { name: "description", content: "Rights and obligations tracker across all your contracts, grouped by party." },
     ],
   }),
@@ -14,9 +20,32 @@ export const Route = createFileRoute("/app/obligations")({
 });
 
 function ObligationsPage() {
-  const rows = contracts.flatMap((c) =>
-    c.obligations.map((o) => ({ ...o, contract: c.name })),
-  );
+  const { contractId: selectedContractId } = Route.useSearch();
+  const { data: rows = [], isError, error } = useQuery({
+    queryKey: ["obligations", selectedContractId],
+    queryFn: async () => {
+      const contracts = await getContracts();
+      const grouped = await Promise.all(
+        contracts.map(async (contract) => {
+          const obligations = await getObligations(contract.id);
+          return obligations.map((o) => ({ ...o, contract: contract.name, contractId: contract.id }));
+        }),
+      );
+      const flattened = grouped.flat();
+      if (!selectedContractId) {
+        return flattened;
+      }
+
+      return flattened.filter((row) => row.contractId === selectedContractId);
+    },
+  });
+
+  useEffect(() => {
+    if (isError) {
+      toast.error(error instanceof Error ? error.message : "Failed to load obligations");
+    }
+  }, [error, isError]);
+
   return (
     <div className="space-y-6">
       <div>

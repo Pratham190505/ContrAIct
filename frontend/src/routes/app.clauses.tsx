@@ -1,16 +1,21 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
+import { toast } from "sonner";
+import { contractSelectionSearchSchema } from "@/lib/contract-selection";
 
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { RiskBadge } from "@/components/app/risk-badge";
-import { contracts } from "@/lib/mock-contracts";
+import { getClauses } from "@/api/analysis";
+import { getContracts } from "@/api/contracts";
 
 export const Route = createFileRoute("/app/clauses")({
+  validateSearch: contractSelectionSearchSchema,
   head: () => ({
     meta: [
-      { title: "Clauses – ContrAIct" },
+      { title: "Clauses - ContrAIct" },
       { name: "description", content: "Clause-by-clause breakdown with plain-English rewrite, risk level, consequences, and negotiation advice." },
     ],
   }),
@@ -18,21 +23,49 @@ export const Route = createFileRoute("/app/clauses")({
 });
 
 function ClausesPage() {
-  const c = contracts[0];
-  const [selected, setSelected] = useState(c.clauses[0].id);
-  const clause = c.clauses.find((x) => x.id === selected) ?? c.clauses[0];
+  const [selected, setSelected] = useState<string | null>(null);
+  const { contractId: selectedContractId } = Route.useSearch();
+  const { data: contracts = [], isError: contractsError, error: contractsErrorValue } = useQuery({
+    queryKey: ["contracts"],
+    queryFn: getContracts,
+  });
+  const contract = contracts.find((c) => c.id === selectedContractId) ?? contracts[0];
+  const { data: clauses = [], isError, error } = useQuery({
+    queryKey: ["contracts", contract?.id, "clauses"],
+    queryFn: () => getClauses(contract!.id),
+    enabled: Boolean(contract?.id),
+  });
+
+  useEffect(() => {
+    if (!selected && clauses[0]) {
+      setSelected(clauses[0].id);
+    }
+  }, [clauses, selected]);
+
+  useEffect(() => {
+    if (contractsError || isError) {
+      const message = contractsErrorValue instanceof Error ? contractsErrorValue.message : error instanceof Error ? error.message : "Failed to load clauses";
+      toast.error(message);
+    }
+  }, [contractsError, contractsErrorValue, error, isError]);
+
+  const clause = clauses.find((x) => x.id === selected) ?? clauses[0];
+
+  if (!contract || !clause) {
+    return null;
+  }
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="font-display text-3xl font-semibold">Clause-by-clause</h1>
-        <p className="text-sm text-muted-foreground">{c.name}</p>
+        <p className="text-sm text-muted-foreground">{contract.name}</p>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-12">
         <Card className="p-2 lg:col-span-4">
           <div className="space-y-1">
-            {c.clauses.map((cl) => (
+            {clauses.map((cl) => (
               <button
                 key={cl.id}
                 onClick={() => setSelected(cl.id)}

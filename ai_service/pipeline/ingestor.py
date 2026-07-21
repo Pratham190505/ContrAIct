@@ -10,6 +10,7 @@ retrieval is always scoped to a single document.
 """
 import os
 import shutil
+import time
 from pathlib import Path
 from typing import List, Tuple
 
@@ -171,12 +172,22 @@ def ingest_contract(
         page_count  : number of pages
         vectorstore : built Chroma instance ready for retrieval
     """
+    started_at = time.perf_counter()
+
+    ocr_started_at = time.perf_counter()
     raw_text, page_count = extract_text(file_path, mime_type)
+    print(f"[OCR] contractId={contract_id} elapsed={time.perf_counter() - ocr_started_at:.2f}s")
 
     if not raw_text.strip():
         raise ValueError("No text could be extracted from the document.")
 
+    chunking_started_at = time.perf_counter()
     chunks      = chunk_text(raw_text, contract_id)
+    print(f"[CHUNKING] contractId={contract_id} elapsed={time.perf_counter() - chunking_started_at:.2f}s chunks={len(chunks)}")
+
+    embeddings_started_at = time.perf_counter()
     vectorstore = build_vectorstore(chunks, contract_id)
+    print(f"[EMBEDDINGS] contractId={contract_id} elapsed={time.perf_counter() - embeddings_started_at:.2f}s")
+    print(f"[INGEST DONE] contractId={contract_id} elapsed={time.perf_counter() - started_at:.2f}s")
 
     return raw_text, page_count, vectorstore

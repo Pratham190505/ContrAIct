@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
 import { useTheme } from "@/components/theme-provider";
+import { useAuth } from "@/contexts/auth-context";
 
 export const Route = createFileRoute("/app/settings")({
   head: () => ({
@@ -19,6 +20,7 @@ export const Route = createFileRoute("/app/settings")({
 
 function SettingsPage() {
   const { theme, setTheme } = useTheme();
+  const { user } = useAuth();
   return (
     <div className="mx-auto max-w-3xl space-y-6">
       <div>
@@ -31,11 +33,11 @@ function SettingsPage() {
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label>Name</Label>
-            <Input defaultValue="Jordan Diaz" />
+            <Input value={user?.name ?? ""} readOnly />
           </div>
           <div className="space-y-1.5">
             <Label>Email</Label>
-            <Input defaultValue="jordan@example.com" />
+            <Input value={user?.email ?? ""} readOnly />
           </div>
         </div>
       </Card>

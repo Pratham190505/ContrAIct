@@ -18,6 +18,8 @@ Flow:
 """
 import asyncio
 import os
+import time
+import traceback
 from contextlib import asynccontextmanager
 from typing import Optional
 
@@ -116,11 +118,15 @@ async def _run_analysis_and_callback(
     callback_url: str,
 ):
     """Background task: ingest → analyze → POST results to backend."""
+    analysis_started_at = time.perf_counter()
+    print(f"[ANALYSIS START] contractId={contract_id} callbackUrl={callback_url}")
+
     try:
         print(f"[ai_service] Starting analysis for {contract_id}")
 
         # Run in thread pool (CPU-bound + blocking I/O)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
+
         raw_text, page_count, vectorstore = await loop.run_in_executor(
             None,
             ingest_contract,
@@ -139,22 +145,50 @@ async def _run_analysis_and_callback(
         )
 
         # Callback to Node.js backend
+        callback_started_at = time.perf_counter()
         async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.patch(callback_url, json=analysis)
+            resp = await client.patch(
+                callback_url,
+                json=analysis,
+                headers={"x-ai-secret": config.AI_SERVICE_SECRET},
+            )
+            response_body = resp.text
+            print(
+                f"[CALLBACK] contractId={contract_id} url={callback_url} "
+                f"status={resp.status_code} elapsed={time.perf_counter() - callback_started_at:.2f}s response={response_body}"
+            )
             resp.raise_for_status()
-            print(f"[ai_service] Analysis saved for {contract_id} — status {resp.status_code}")
+
+        print(f"[DONE] contractId={contract_id} elapsed={time.perf_counter() - analysis_started_at:.2f}s")
 
     except Exception as e:
         print(f"[ai_service] ERROR analyzing {contract_id}: {e}")
+        print(traceback.format_exc())
+        if isinstance(e, httpx.HTTPStatusError):
+            response_text = e.response.text
+            print(
+                f"[CALLBACK ERROR] contractId={contract_id} url={callback_url} "
+                f"status={e.response.status_code} response={response_text}"
+            )
         # Notify backend of failure
         try:
+            failure_started_at = time.perf_counter()
             async with httpx.AsyncClient(timeout=10.0) as client:
-                await client.patch(callback_url, json={
-                    "status": "FAILED",
-                    "error":  str(e),
-                })
-        except Exception:
-            pass
+                failure_resp = await client.patch(
+                    callback_url,
+                    json={
+                        "status": "FAILED",
+                        "error":  str(e),
+                    },
+                    headers={"x-ai-secret": config.AI_SERVICE_SECRET},
+                )
+                print(
+                    f"[AI CALLBACK FAILED] contractId={contract_id} url={callback_url} "
+                    f"status={failure_resp.status_code} elapsed={time.perf_counter() - failure_started_at:.2f}s response={failure_resp.text}"
+                )
+        except Exception as callback_error:
+            print(f"[AI CALLBACK FAILED] contractId={contract_id} url={callback_url} error={callback_error}")
+            print(traceback.format_exc())
 
 
 # ── POST /chat ────────────────────────────────────────────────────────────────

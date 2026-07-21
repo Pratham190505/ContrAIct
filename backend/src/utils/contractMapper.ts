@@ -6,6 +6,7 @@ type FullContract = Contract & {
   clauses: Clause[];
   obligations: Obligation[];
   dates: ContractDate[];
+  failureReason?: string | null;
 };
 
 export function mapClause(c: Clause): ClauseDTO {
@@ -49,7 +50,8 @@ export function mapContract(contract: FullContract): ContractDTO {
     pages: contract.pages,
     riskScore: contract.riskScore,
     confidence: contract.confidence,
-    status: contract.status === "ANALYZED" ? "analyzed" : "processing",
+    status: contract.status.toLowerCase() as "uploading" | "analyzed" | "processing" | "failed",
+    ...(contract.failureReason ? { failureReason: contract.failureReason } : {}),
     summary: contract.summary ?? "",
     clauses: contract.clauses.map(mapClause),
     obligations: contract.obligations.map(mapObligation),

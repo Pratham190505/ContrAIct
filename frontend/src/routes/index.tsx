@@ -304,7 +304,7 @@ function Landing() {
             </h2>
             <p className="mt-4 text-sm text-muted-foreground">
               A collapsible left sidebar keeps every tool one click away — Upload, Contracts, Analysis,
-              Clauses, Chat, Compare, Timeline, Obligations, and Reports.
+              Clauses, Chat, Timeline, Obligations, and Reports.
             </p>
             <ul className="mt-6 space-y-2 text-sm">
               {[
@@ -332,7 +332,7 @@ function Landing() {
             </div>
             <div className="grid grid-cols-12 gap-0">
               <div className="col-span-3 border-r bg-sidebar p-3 text-[11px]">
-                {["Dashboard", "Upload", "Contracts", "Analysis", "Clauses", "Chat", "Compare"].map((n, i) => (
+                {["Dashboard", "Upload", "Contracts", "Analysis", "Clauses", "Chat", "Timeline"].map((n, i) => (
                   <div
                     key={n}
                     className={`mb-1 rounded-md px-2 py-1.5 ${

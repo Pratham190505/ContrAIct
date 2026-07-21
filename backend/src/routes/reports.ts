@@ -3,6 +3,7 @@ import path from "path";
 import fs from "fs";
 import axios from "axios";
 import { prisma } from "../config/db";
+import { logger } from "../config/logger";
 import { requireAuth, AuthRequest } from "../middleware/auth";
 import { ok, fail } from "../utils/response";
 
@@ -59,6 +60,59 @@ router.get("/", async (req: AuthRequest, res) => {
   } catch (err) {
     console.error("[reports/get]", err);
     return fail(res, "Failed to generate report", 500);
+  }
+});
+
+// ── DELETE /api/contracts/:id/report ────────────────────────────────────────
+// Deletes the generated report(s) for the contract but keeps the contract and analysis data.
+router.delete("/", async (req: AuthRequest, res) => {
+  try {
+    const contract = await prisma.contract.findFirst({
+      where: { id: req.params.id, userId: req.userId! },
+    });
+
+    if (!contract) return fail(res, "Contract not found", 404);
+
+    const reports = await prisma.report.findMany({
+      where: { contractId: req.params.id },
+      orderBy: { generatedAt: "desc" },
+    });
+
+    if (!reports.length) {
+      return fail(res, "Report not found", 404);
+    }
+
+    for (const report of reports) {
+      if (!fs.existsSync(report.filePath)) {
+        continue;
+      }
+
+      try {
+        fs.unlinkSync(report.filePath);
+      } catch (unlinkError) {
+        if ((unlinkError as NodeJS.ErrnoException).code !== "ENOENT") {
+          logger.error("[reports/delete] Failed to delete file", {
+            contractId: req.params.id,
+            reportId: report.id,
+            filePath: report.filePath,
+            error: unlinkError,
+          });
+        }
+      }
+    }
+
+    await prisma.report.deleteMany({
+      where: { contractId: req.params.id },
+    });
+
+    return ok(res, { deleted: true });
+  } catch (err) {
+    logger.error("[reports/delete]", {
+      contractId: req.params.id,
+      error: err instanceof Error ? err.message : err,
+      stack: err instanceof Error ? err.stack : undefined,
+    });
+    return fail(res, "Failed to delete report", 500);
   }
 });
 
