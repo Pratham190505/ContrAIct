@@ -92,7 +92,9 @@ function ReportsPage() {
       const anchor = document.createElement("a");
       anchor.href = url;
       anchor.download = `${contract?.name ?? "contract"}-report.pdf`;
+      document.body.appendChild(anchor);
       anchor.click();
+      anchor.remove();
       URL.revokeObjectURL(url);
     },
     onSuccess: () => {
