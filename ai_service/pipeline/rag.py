@@ -25,11 +25,11 @@ Graph topology (unchanged from original):
 from typing import TypedDict, List, Optional
 from langchain_core.documents import Document
 from langchain_community.vectorstores import Chroma
-from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langgraph.graph import StateGraph, END
 
 import config
+from pipeline.llm_client import invoke_llm
 
 
 # ── State ─────────────────────────────────────────────────────────────────────
@@ -120,12 +120,10 @@ def make_retriever_node(vectorstore: Chroma):
 
 
 def make_generator_node():
-    llm   = ChatGroq(model=config.LLM_MODEL, temperature=0, groq_api_key=config.GROQ_API_KEY)
-    chain = GENERATION_PROMPT | llm
-
     def generate(state: ContractRAGState) -> dict:
         context = "\n\n---\n\n".join(d.page_content for d in state["documents"])
-        response = chain.invoke({"context": context, "question": state["question"]})
+        messages = GENERATION_PROMPT.invoke({"context": context, "question": state["question"]})
+        response = invoke_llm(messages, feature="chat_generate", temperature=0)
         answer   = response.content.strip()
 
         # Extract clause citations like "§ 9.1 Non-Compete"
@@ -143,12 +141,10 @@ def make_generator_node():
 
 
 def make_critic_node():
-    llm   = ChatGroq(model=config.LLM_MODEL, temperature=0, groq_api_key=config.GROQ_API_KEY)
-    chain = CRITIC_PROMPT | llm
-
     def critic(state: ContractRAGState) -> dict:
         context  = "\n\n---\n\n".join(d.page_content for d in state["documents"])
-        response = chain.invoke({"context": context, "answer": state["answer"]})
+        messages = CRITIC_PROMPT.invoke({"context": context, "answer": state["answer"]})
+        response = invoke_llm(messages, feature="chat_critic", temperature=0)
         verdict  = response.content.strip().lower()
 
         if verdict not in ("yes", "no"):
@@ -169,13 +165,10 @@ def make_critic_node():
 
 
 def make_reformulator_node():
-    llm   = ChatGroq(model=config.LLM_MODEL, temperature=0.3, groq_api_key=config.GROQ_API_KEY)
-    chain = REFORMULATION_PROMPT | llm
-
     def reformulate(state: ContractRAGState) -> dict:
         attempts = state.get("attempts", 0)
 
-        if attempts >= config.MAX_RETRY_ATTEMPTS:
+        if attempts >= min(config.MAX_RETRY_ATTEMPTS, 2):
             return {
                 "answer":     "This contract does not address that topic with sufficient detail.",
                 "done":       True,
@@ -185,11 +178,12 @@ def make_reformulator_node():
             }
 
         context  = "\n\n---\n\n".join(d.page_content for d in state["documents"])
-        response = chain.invoke({
+        messages = REFORMULATION_PROMPT.invoke({
             "question": state["question"],
             "context":  context,
             "answer":   state["answer"],
         })
+        response = invoke_llm(messages, feature="chat_reformulate", temperature=0.3)
         new_question = response.content.strip()
 
         return {

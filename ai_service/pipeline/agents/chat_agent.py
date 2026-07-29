@@ -14,6 +14,7 @@ This is the primary consumer of pipeline/rag.py.
 from langchain_community.vectorstores import Chroma
 from pipeline.rag import run_contract_query
 from pipeline.ingestor import load_vectorstore
+from pipeline.llm_client import reset_upload_call_count
 
 
 def answer_question(
@@ -42,6 +43,7 @@ def answer_question(
     if vectorstore is None:
         vectorstore = load_vectorstore(contract_id)
 
+    reset_upload_call_count(None)
     return run_contract_query(
         vectorstore=vectorstore,
         contract_id=contract_id,
@@ -54,14 +56,12 @@ def generate_suggested_questions(raw_text: str) -> list[str]:
     Generate 5 smart starter questions based on the contract content.
     Used for the question suggester feature in the chat UI.
     """
-    from langchain_groq import ChatGroq
     from langchain_core.prompts import ChatPromptTemplate
-    import config
     import json
     import re
+    from pipeline.llm_client import invoke_llm
 
-    llm = ChatGroq(model=config.LLM_MODEL, temperature=0.3, groq_api_key=config.GROQ_API_KEY)
-
+    reset_upload_call_count(None)
     prompt = ChatPromptTemplate.from_template("""
 You are ContrAIct, an AI legal assistant.
 
@@ -76,8 +76,8 @@ Respond with ONLY a JSON array of 5 question strings (no markdown):
 ["<question 1>", "<question 2>", "<question 3>", "<question 4>", "<question 5>"]
 """)
 
-    chain    = prompt | llm
-    response = chain.invoke({"text": raw_text[:5000]})
+    messages = prompt.invoke({"text": raw_text[:5000]})
+    response = invoke_llm(messages, feature="suggested_questions", temperature=0.3)
     content  = response.content.strip()
     content  = re.sub(r"```(?:json)?", "", content).strip()
 

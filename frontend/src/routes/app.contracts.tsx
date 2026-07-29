@@ -1,7 +1,7 @@
-import { createFileRoute, Link, Outlet } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
+import { createFileRoute, Link, Outlet, useNavigate } from "@tanstack/react-router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { Search, Upload } from "lucide-react";
+import { Loader2, Search, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { contractSelectionSearchSchema } from "@/lib/contract-selection";
 
@@ -9,7 +9,17 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { RiskBadge } from "@/components/app/risk-badge";
-import { getContracts } from "@/api/contracts";
+import { deleteContract, getContracts, type Contract } from "@/api/contracts";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 export const Route = createFileRoute("/app/contracts")({
   validateSearch: contractSelectionSearchSchema,
@@ -23,8 +33,11 @@ export const Route = createFileRoute("/app/contracts")({
 });
 
 function ContractsPage() {
+  const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { contractId: selectedContractId } = Route.useSearch();
   const [q, setQ] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState<Contract | null>(null);
   const { data: contracts = [], isError, error } = useQuery({
     queryKey: ["contracts"],
     queryFn: getContracts,
@@ -40,6 +53,41 @@ function ContractsPage() {
       toast.error(error instanceof Error ? error.message : "Failed to load contracts");
     }
   }, [error, isError]);
+
+  const deleteMutation = useMutation({
+    mutationFn: (contractId: string) => deleteContract(contractId),
+    onSuccess: async (result, contractId) => {
+      queryClient.setQueryData<Contract[]>(["contracts"], (current) =>
+        (current ?? []).filter((contract) => contract.id !== contractId),
+      );
+      queryClient.removeQueries({
+        predicate: (query) => query.queryKey.includes(contractId),
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["contracts"] }),
+        queryClient.invalidateQueries({ queryKey: ["analysis"] }),
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+        queryClient.invalidateQueries({ queryKey: ["reports"] }),
+        queryClient.invalidateQueries({ queryKey: ["timeline"] }),
+        queryClient.invalidateQueries({ queryKey: ["chat"] }),
+        queryClient.invalidateQueries({ queryKey: ["obligations"] }),
+        queryClient.invalidateQueries({ queryKey: ["compare"] }),
+        queryClient.invalidateQueries({
+          predicate: (query) =>
+            ["contracts", "reports"].includes(String(query.queryKey[0])) ||
+            query.queryKey.includes(contractId),
+        }),
+      ]);
+      toast.success(result.message ?? "Contract and all associated analysis have been permanently deleted.");
+      setDeleteTarget(null);
+      if (selectedContractId === contractId) {
+        void navigate({ to: "/app/contracts", search: {} });
+      }
+    },
+    onError: (deleteError) => {
+      toast.error(deleteError instanceof Error ? deleteError.message : "Failed to delete contract");
+    },
+  });
 
   return (
     <div className="space-y-6">
@@ -73,6 +121,7 @@ function ContractsPage() {
               <th className="px-4 py-3">Pages</th>
               <th className="px-4 py-3">Risk</th>
               <th className="px-4 py-3 text-right">Uploaded</th>
+              <th className="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -95,6 +144,22 @@ function ContractsPage() {
                   <RiskBadge level={c.riskScore >= 70 ? "high" : c.riskScore >= 40 ? "medium" : "low"} />
                 </td>
                 <td className="px-4 py-3 text-right text-muted-foreground">{c.uploadedAt}</td>
+                <td className="px-4 py-3 text-right">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                    onClick={() => setDeleteTarget(c)}
+                    disabled={deleteMutation.isPending && deleteTarget?.id === c.id}
+                  >
+                    {deleteMutation.isPending && deleteTarget?.id === c.id ? (
+                      <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <Trash2 className="mr-1.5 h-3.5 w-3.5" />
+                    )}
+                    Delete
+                  </Button>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -102,6 +167,57 @@ function ContractsPage() {
       </Card>
 
       <Outlet />
+
+      <AlertDialog
+        open={Boolean(deleteTarget)}
+        onOpenChange={(open) => {
+          if (!open && !deleteMutation.isPending) {
+            setDeleteTarget(null);
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Contract?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This action permanently deletes:
+              <br />
+              Uploaded contract
+              <br />
+              AI analysis
+              <br />
+              Risk score
+              <br />
+              Clauses
+              <br />
+              Timeline
+              <br />
+              Reports
+              <br />
+              Chat history
+              <br />
+              <br />
+              This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              asChild
+              onClick={(event) => {
+                event.preventDefault();
+                if (!deleteTarget || deleteMutation.isPending) return;
+                deleteMutation.mutate(deleteTarget.id);
+              }}
+            >
+              <Button variant="destructive" disabled={deleteMutation.isPending || !deleteTarget}>
+                {deleteMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Delete Contract
+              </Button>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

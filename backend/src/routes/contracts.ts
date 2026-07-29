@@ -1,6 +1,8 @@
 import { Router } from "express";
 import path from "path";
 import axios from "axios";
+import fs from "fs/promises";
+import { createHash } from "crypto";
 import { z } from "zod";
 import { prisma } from "../config/db";
 import { requireAuth, AuthRequest } from "../middleware/auth";
@@ -13,6 +15,7 @@ import { ok, fail } from "../utils/response";
 const router = Router();
 
 const AI_SERVICE = process.env.AI_SERVICE_URL ?? "http://localhost:8000";
+const DELETE_SUCCESS_MESSAGE = "Contract and all associated analysis have been permanently deleted.";
 
 const RiskLevelSchema = z.enum(["low", "medium", "high"]);
 const DateKindSchema = z.enum(["renewal", "expiry", "payment", "review"]);
@@ -89,7 +92,25 @@ router.post(
     const { originalname, path: filePath, size, mimetype } = req.file;
 
     try {
-      logger.info("[UPLOAD]", { userId: req.userId, filename: originalname, mimeType: mimetype, size });
+      const fileHash = await computeFileHash(filePath);
+      logger.info("[UPLOAD]", { userId: req.userId, filename: originalname, mimeType: mimetype, size, fileHash });
+
+      const duplicate = await prisma.contract.findFirst({
+        where: {
+          userId: req.userId!,
+          fileHash,
+        } as any,
+        include: { clauses: true, obligations: true, dates: true },
+        orderBy: { uploadedAt: "desc" },
+      });
+
+      if (duplicate) {
+        await fs.unlink(filePath).catch((unlinkError) => {
+          logger.warn("[UPLOAD DUPLICATE CLEANUP]", { filePath, error: unlinkError });
+        });
+        logger.info("[UPLOAD DEDUPED]", { contractId: duplicate.id, fileHash, status: duplicate.status });
+        return ok(res, mapContract(duplicate), duplicate.status === "PROCESSING" ? 202 : 200);
+      }
 
       const contract = await prisma.contract.create({
         data: {
@@ -98,14 +119,15 @@ router.post(
           type: "Unknown",
           party: "Unknown",
           filePath,
+          fileHash,
           fileSize: size,
           mimeType: mimetype,
           status: "PROCESSING",
-        },
+        } as any,
         include: { clauses: true, obligations: true, dates: true },
       });
 
-      triggerAnalysis(contract.id, filePath, mimetype).catch((err) => {
+      triggerAnalysis(contract.id, filePath, mimetype, fileHash).catch((err) => {
         const message = err instanceof Error ? err.message : "AI trigger failed";
         logger.error("[AI CALLBACK FAILED]", {
           contractId: contract.id,
@@ -196,6 +218,7 @@ router.patch("/:id/analysis", requireAIService, async (req, res) => {
       summary, missing, negotiation, rawText,
       clauses, obligations, dates,
     } = parsed.data;
+    const { rawText: _rawText, ...analysisJson } = parsed.data;
 
     const updated = await prisma.$transaction(async (tx) => {
       await tx.contract.update({
@@ -209,6 +232,7 @@ router.patch("/:id/analysis", requireAIService, async (req, res) => {
           summary,
           missing,
           negotiation,
+          analysisJson,
           rawText,
           status: "ANALYZED",
           failureReason: null,
@@ -256,25 +280,183 @@ router.patch("/:id/analysis", requireAIService, async (req, res) => {
 });
 
 router.delete("/:id", requireAuth, async (req: AuthRequest, res) => {
+  const contractId = req.params.id;
+  const userId = req.userId!;
+  const startedAt = Date.now();
+
   try {
     const contract = await prisma.contract.findFirst({
-      where: { id: req.params.id, userId: req.userId! },
+      where: { id: contractId, userId },
+      include: { reports: true },
     });
     if (!contract) return fail(res, "Contract not found", 404);
 
-    await prisma.contract.delete({ where: { id: req.params.id } });
-    return ok(res, { deleted: true });
+    const reportPaths = contract.reports.map((report) => report.filePath);
+    const uploadedPath = contract.filePath;
+    const documentHash = contract.fileHash;
+
+    const deletedRecords = await prisma.$transaction(async (tx) => {
+      const chatMessages = await tx.chatMessage.deleteMany({ where: { contractId } });
+      const clauses = await tx.clause.deleteMany({ where: { contractId } });
+      const obligations = await tx.obligation.deleteMany({ where: { contractId } });
+      const dates = await tx.contractDate.deleteMany({ where: { contractId } });
+      const reports = await tx.report.deleteMany({ where: { contractId } });
+      await tx.contract.delete({ where: { id: contractId } });
+
+      return {
+        chatMessages: chatMessages.count,
+        clauses: clauses.count,
+        obligations: obligations.count,
+        dates: dates.count,
+        reports: reports.count,
+        contracts: 1,
+      };
+    });
+
+    const cleanup = await cleanupContractResources({
+      contractId,
+      userId,
+      uploadedPath,
+      reportPaths,
+      documentHash,
+    });
+
+    logger.info("[CONTRACT DELETE]", {
+      contractId,
+      userId,
+      deletedRecords,
+      deletedPdf: cleanup.uploadedPdf.deleted,
+      deletedReports: cleanup.reports.deleted,
+      deletedCache: cleanup.aiService.cacheDeleted,
+      deletedEmbeddings: cleanup.aiService.embeddingsDeleted,
+      elapsedMs: Date.now() - startedAt,
+    });
+
+    return ok(res, {
+      deleted: true,
+      message: DELETE_SUCCESS_MESSAGE,
+      deletedRecords,
+    });
   } catch (err) {
-    console.error("[contracts/delete]", err);
+    logger.error("[contracts/delete]", {
+      contractId,
+      userId,
+      error: err instanceof Error ? err.message : err,
+      stack: err instanceof Error ? err.stack : undefined,
+      elapsedMs: Date.now() - startedAt,
+    });
     return fail(res, "Delete failed", 500);
   }
 });
 
-async function triggerAnalysis(contractId: string, filePath: string, mimeType: string) {
+type CleanupInput = {
+  contractId: string;
+  userId: string;
+  uploadedPath: string;
+  reportPaths: string[];
+  documentHash: string | null;
+};
+
+type CleanupResult = {
+  uploadedPdf: { deleted: boolean };
+  reports: { deleted: number };
+  aiService: { cacheDeleted: number; embeddingsDeleted: boolean };
+};
+
+async function cleanupContractResources(input: CleanupInput): Promise<CleanupResult> {
+  const uploadDir = path.resolve(process.env.UPLOAD_DIR ?? "uploads");
+  const reportCandidates = [
+    ...input.reportPaths,
+    path.resolve(process.cwd(), "reports", `${input.contractId}-report.pdf`),
+  ];
+
+  const fsTasks = [
+    removePathBestEffort(input.uploadedPath, "uploadedPdf", input.contractId, input.userId),
+    ...uniqueStrings(reportCandidates).map((reportPath) =>
+      removePathBestEffort(reportPath, "generatedReport", input.contractId, input.userId),
+    ),
+    removePathBestEffort(path.join(uploadDir, input.contractId), "uploadFolder", input.contractId, input.userId),
+    removePathBestEffort(path.join(uploadDir, "tmp", input.contractId), "tmpUploadFolder", input.contractId, input.userId),
+    removePathBestEffort(path.join(uploadDir, "ocr", input.contractId), "ocrTempFolder", input.contractId, input.userId),
+    removePathBestEffort(path.join(uploadDir, "previews", input.contractId), "previews", input.contractId, input.userId),
+    removePathBestEffort(path.join(uploadDir, "thumbnails", input.contractId), "thumbnails", input.contractId, input.userId),
+  ];
+
+  const [uploadedPdf, ...otherFileResults] = await Promise.all(fsTasks);
+  const aiCleanup = await cleanupAIResources(input.contractId, input.documentHash, input.userId);
+
+  return {
+    uploadedPdf: { deleted: uploadedPdf.deleted },
+    reports: {
+      deleted: otherFileResults.filter((result) => result.label === "generatedReport" && result.deleted).length,
+    },
+    aiService: aiCleanup,
+  };
+}
+
+async function removePathBestEffort(filePath: string | null | undefined, label: string, contractId: string, userId: string) {
+  if (!filePath) return { label, deleted: false, missing: true };
+
+  const target = path.resolve(filePath);
+  try {
+    await fs.access(target);
+    await fs.rm(target, { recursive: true, force: true });
+    return { label, deleted: true, path: target };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { label, deleted: false, missing: true, path: target };
+    }
+    logger.warn("[CONTRACT DELETE FILE WARNING]", {
+      contractId,
+      userId,
+      label,
+      path: target,
+      error: error instanceof Error ? error.message : error,
+    });
+    return { label, deleted: false, path: target, error };
+  }
+}
+
+async function cleanupAIResources(contractId: string, documentHash: string | null, userId: string) {
+  try {
+    const response = await axios.post(
+      `${AI_SERVICE}/cleanup`,
+      { contractId, documentHash },
+      {
+        timeout: 15000,
+        headers: { "x-ai-secret": process.env.AI_SERVICE_SECRET ?? "" },
+      },
+    );
+    const resources = Array.isArray(response.data?.resources) ? response.data.resources : [];
+    return {
+      cacheDeleted: resources.filter((item: any) => item.label === "cache" && item.deleted).length,
+      embeddingsDeleted: resources.some((item: any) => item.label === "vectorstore" && item.deleted),
+    };
+  } catch (error) {
+    logger.warn("[CONTRACT DELETE AI CLEANUP WARNING]", {
+      contractId,
+      userId,
+      error: error instanceof Error ? error.message : error,
+    });
+    return { cacheDeleted: 0, embeddingsDeleted: false };
+  }
+}
+
+function uniqueStrings(values: Array<string | null | undefined>) {
+  return Array.from(new Set(values.filter((value): value is string => Boolean(value))));
+}
+
+async function computeFileHash(filePath: string) {
+  const file = await fs.readFile(filePath);
+  return createHash("sha256").update(file).digest("hex");
+}
+
+async function triggerAnalysis(contractId: string, filePath: string, mimeType: string, documentHash: string) {
   await axios.post(`${AI_SERVICE}/analyze`, {
     contractId,
     filePath: path.resolve(filePath),
     mimeType,
+    documentHash,
     callbackUrl: `${process.env.BACKEND_URL ?? "http://localhost:5000"}/api/contracts/${contractId}/analysis`,
   });
 }

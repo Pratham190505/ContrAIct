@@ -18,13 +18,15 @@ Flow:
 """
 import asyncio
 import os
+import shutil
 import time
 import traceback
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Optional
 
 import httpx
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Header
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
@@ -32,6 +34,7 @@ import config
 from pipeline.ingestor  import ingest_contract, load_vectorstore
 from pipeline.analyzer  import run_full_analysis
 from pipeline.agents.chat_agent import answer_question, generate_suggested_questions
+from pipeline.llm_client import get_upload_call_count, invoke_llm, reset_upload_call_count
 
 
 # ── App lifecycle ─────────────────────────────────────────────────────────────
@@ -63,6 +66,7 @@ class AnalyzeRequest(BaseModel):
     filePath:    str
     mimeType:    str
     callbackUrl: str                  # Node.js PATCH endpoint
+    documentHash: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
@@ -79,6 +83,12 @@ class CompareRequest(BaseModel):
 
 class ReportRequest(BaseModel):
     contractId: str
+    analysis: Optional[dict] = None
+
+
+class CleanupRequest(BaseModel):
+    contractId: str
+    documentHash: Optional[str] = None
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
@@ -94,6 +104,79 @@ def health():
 
 # ── POST /analyze ─────────────────────────────────────────────────────────────
 
+def _require_backend_secret(provided_secret: str | None) -> None:
+    if not config.AI_SERVICE_SECRET:
+        raise HTTPException(status_code=500, detail="AI service authentication is not configured")
+    if provided_secret != config.AI_SERVICE_SECRET:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+async def _remove_path(path: str | Path, label: str, contract_id: str) -> dict:
+    target = Path(path)
+    try:
+        if not target.exists():
+            return {"label": label, "path": str(target), "deleted": False, "missing": True}
+        if target.is_dir():
+            await asyncio.to_thread(shutil.rmtree, target)
+        else:
+            await asyncio.to_thread(target.unlink)
+        return {"label": label, "path": str(target), "deleted": True}
+    except Exception as error:
+        print(f"[ai_service/cleanup] WARN contractId={contract_id} label={label} path={target} error={error}")
+        return {"label": label, "path": str(target), "deleted": False, "error": str(error)}
+
+
+def _cache_paths_for_contract(contract_id: str, document_hash: str | None) -> list[Path]:
+    paths: list[Path] = []
+    if document_hash:
+        paths.append(Path(config.CACHE_BASE_DIR) / document_hash)
+
+    cache_root = Path(config.CACHE_BASE_DIR)
+    if not cache_root.exists():
+        return paths
+
+    for analysis_path in cache_root.glob("*/analysis.json"):
+        if analysis_path.parent in paths:
+            continue
+        try:
+            if contract_id in analysis_path.read_text(encoding="utf-8"):
+                paths.append(analysis_path.parent)
+        except Exception as error:
+            print(f"[ai_service/cleanup] WARN contractId={contract_id} cacheScan={analysis_path} error={error}")
+    return paths
+
+
+@app.post("/cleanup")
+async def cleanup_contract_resources(req: CleanupRequest, x_ai_secret: Optional[str] = Header(default=None)):
+    _require_backend_secret(x_ai_secret)
+    started_at = time.perf_counter()
+
+    targets = [
+        (Path(config.VECTORSTORE_BASE_DIR) / req.contractId, "vectorstore"),
+        (Path(os.path.dirname(__file__)) / "reports" / f"{req.contractId}-report.pdf", "aiReport"),
+        (Path(os.path.dirname(__file__)) / "tmp" / req.contractId, "tmp"),
+        (Path(os.path.dirname(__file__)) / "ocr" / req.contractId, "ocr"),
+        (Path(os.path.dirname(__file__)) / "previews" / req.contractId, "previews"),
+        (Path(os.path.dirname(__file__)) / "thumbnails" / req.contractId, "thumbnails"),
+    ]
+    targets.extend((path, "cache") for path in _cache_paths_for_contract(req.contractId, req.documentHash))
+
+    results = await asyncio.gather(
+        *(_remove_path(path, label, req.contractId) for path, label in targets),
+        return_exceptions=False,
+    )
+
+    deleted_cache = sum(1 for item in results if item["label"] == "cache" and item.get("deleted"))
+    deleted_embeddings = any(item["label"] == "vectorstore" and item.get("deleted") for item in results)
+    deleted_report = any(item["label"] == "aiReport" and item.get("deleted") for item in results)
+    print(
+        f"[CLEANUP DONE] contractId={req.contractId} "
+        f"deletedEmbeddings={deleted_embeddings} deletedCache={deleted_cache} "
+        f"deletedReport={deleted_report} elapsed={time.perf_counter() - started_at:.2f}s"
+    )
+    return {"deleted": True, "resources": results}
+
+
 @app.post("/analyze", status_code=202)
 async def analyze_contract(req: AnalyzeRequest, background_tasks: BackgroundTasks):
     """
@@ -107,6 +190,7 @@ async def analyze_contract(req: AnalyzeRequest, background_tasks: BackgroundTask
         req.filePath,
         req.mimeType,
         req.callbackUrl,
+        req.documentHash,
     )
     return {"status": "processing", "contractId": req.contractId}
 
@@ -116,9 +200,11 @@ async def _run_analysis_and_callback(
     file_path:    str,
     mime_type:    str,
     callback_url: str,
+    document_hash: Optional[str] = None,
 ):
     """Background task: ingest → analyze → POST results to backend."""
     analysis_started_at = time.perf_counter()
+    reset_upload_call_count(contract_id)
     print(f"[ANALYSIS START] contractId={contract_id} callbackUrl={callback_url}")
 
     try:
@@ -133,6 +219,7 @@ async def _run_analysis_and_callback(
             file_path,
             mime_type,
             contract_id,
+            document_hash,
         )
 
         analysis = await loop.run_in_executor(
@@ -142,6 +229,7 @@ async def _run_analysis_and_callback(
             vectorstore,
             contract_id,
             page_count,
+            document_hash,
         )
 
         # Callback to Node.js backend
@@ -160,6 +248,7 @@ async def _run_analysis_and_callback(
             resp.raise_for_status()
 
         print(f"[DONE] contractId={contract_id} elapsed={time.perf_counter() - analysis_started_at:.2f}s")
+        print(f"[UPLOAD LLM CALLS] contractId={contract_id} totalApiCalls={get_upload_call_count(contract_id)}")
 
     except Exception as e:
         print(f"[ai_service] ERROR analyzing {contract_id}: {e}")
@@ -260,7 +349,6 @@ async def compare_contracts(req: CompareRequest):
     Semantic diff between two contracts.
     Uses the LLM to identify added / removed / changed / same clauses.
     """
-    from langchain_groq import ChatGroq
     from langchain_core.prompts import ChatPromptTemplate
     import json
     import re
@@ -268,11 +356,7 @@ async def compare_contracts(req: CompareRequest):
     if not req.rawTextA or not req.rawTextB:
         raise HTTPException(status_code=400, detail="rawTextA and rawTextB are required")
 
-    llm = ChatGroq(
-        model=config.LLM_MODEL,
-        temperature=0,
-        groq_api_key=config.GROQ_API_KEY,
-    )
+    reset_upload_call_count(None)
 
     prompt = ChatPromptTemplate.from_template("""
 You are a legal analyst comparing two versions of a contract clause by clause.
@@ -296,11 +380,11 @@ Respond with ONLY a valid JSON object (no markdown):
 }}
 """)
 
-    chain    = prompt | llm
-    response = chain.invoke({
+    messages = prompt.invoke({
         "textA": req.rawTextA[:4000],
         "textB": req.rawTextB[:4000],
     })
+    response = invoke_llm(messages, feature="compare", temperature=0)
     content  = response.content.strip()
     content  = re.sub(r"```(?:json)?", "", content).strip()
 
@@ -319,18 +403,11 @@ async def generate_report(req: ReportRequest):
     Generate a PDF analysis report for a contract.
     Returns the PDF file as a download.
     """
-    from reportlab.lib.pagesizes import letter
-    from reportlab.lib.styles import getSampleStyleSheet
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-    from reportlab.lib import colors
-    from reportlab.lib.units import inch
-    import tempfile
-
     try:
-        vectorstore = load_vectorstore(req.contractId)
-
-        # Retrieve contract summary via RAG
-        result = run_contract_query_for_report(vectorstore, req.contractId)
+        if req.analysis:
+            result = req.analysis
+        else:
+            raise HTTPException(status_code=400, detail="Stored analysis is required to generate reports")
 
         # Build PDF
         reports_dir = os.path.join(os.path.dirname(__file__), "reports")
@@ -353,30 +430,30 @@ async def generate_report(req: ReportRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def run_contract_query_for_report(vectorstore, contract_id: str) -> dict:
-    """Retrieve a summary snapshot for the report via RAG."""
-    from pipeline.rag import run_contract_query
-    questions = [
-        "What are the main terms and obligations of this contract?",
-        "What are the highest risk clauses?",
-        "What should be negotiated before signing?",
-    ]
-    results = {}
-    for q in questions:
-        r = run_contract_query(vectorstore, contract_id, q)
-        results[q] = r.get("answer", "")
-    return results
-
-
 def _build_pdf(output_path: str, content: dict, contract_id: str):
     """Build a styled PDF report using ReportLab."""
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
     from reportlab.lib import colors
     from reportlab.lib.units import inch
+    from xml.sax.saxutils import escape
 
-    doc    = SimpleDocTemplate(output_path, pagesize=letter)
+    def text(value, fallback=""):
+        if value is None:
+            return fallback
+        if isinstance(value, float):
+            return f"{value:.2f}"
+        return str(value)
+
+    def paragraph(value, style):
+        safe = escape(text(value, "No information available.")).replace("\n", "<br/>")
+        return Paragraph(safe or "No information available.", style)
+
+    def bullet_items(items):
+        return [paragraph(f"- {item}", styles["Normal"]) for item in items if text(item).strip()]
+
+    doc    = SimpleDocTemplate(output_path, pagesize=letter, rightMargin=0.65 * inch, leftMargin=0.65 * inch)
     styles = getSampleStyleSheet()
     story  = []
 
@@ -386,18 +463,90 @@ def _build_pdf(output_path: str, content: dict, contract_id: str):
         fontSize=22, textColor=colors.HexColor("#1a1a2e"), spaceAfter=12,
     )
     story.append(Paragraph("ContrAIct — AI Analysis Report", title_style))
-    story.append(Paragraph(f"Contract ID: {contract_id}", styles["Normal"]))
+    story.append(paragraph(content.get("name", f"Contract {contract_id}"), styles["Heading2"]))
+    meta = [
+        ["Contract ID", contract_id],
+        ["Type", content.get("type", "Contract")],
+        ["Party", content.get("party", "Unknown")],
+        ["Pages", content.get("pages", 0)],
+        ["Risk Score", f"{content.get('riskScore', 0)}/100"],
+        ["Confidence", content.get("confidence", 0)],
+    ]
+    table = Table(
+        [[paragraph(label, styles["BodyText"]), paragraph(value, styles["BodyText"])] for label, value in meta],
+        colWidths=[1.5 * inch, 4.6 * inch],
+    )
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (0, -1), colors.HexColor("#eef2ff")),
+        ("TEXTCOLOR", (0, 0), (0, -1), colors.HexColor("#1e1b4b")),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#d8dee9")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8),
+        ("TOPPADDING", (0, 0), (-1, -1), 6),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+    ]))
+    story.append(table)
     story.append(Spacer(1, 0.3 * inch))
 
     heading_style = ParagraphStyle(
         "Heading", parent=styles["Heading2"],
         fontSize=13, textColor=colors.HexColor("#4f46e5"), spaceBefore=14,
     )
+    subheading_style = ParagraphStyle(
+        "Subheading", parent=styles["Heading3"],
+        fontSize=11, textColor=colors.HexColor("#111827"), spaceBefore=8,
+    )
 
-    for question, answer in content.items():
-        story.append(Paragraph(question, heading_style))
-        story.append(Paragraph(answer or "No information available.", styles["Normal"]))
-        story.append(Spacer(1, 0.2 * inch))
+    if "summary" in content:
+        story.append(Paragraph("Executive Summary", heading_style))
+        story.append(paragraph(content.get("summary"), styles["Normal"]))
+
+        clauses = content.get("clauses") or []
+        if clauses:
+            story.append(Paragraph("Clause Analysis", heading_style))
+            for clause in clauses:
+                risk = text(clause.get("risk", "unknown")).upper()
+                title = text(clause.get("title", "Clause"))
+                story.append(Paragraph(escape(f"{title} ({risk} risk)"), subheading_style))
+                story.append(paragraph(clause.get("plain"), styles["Normal"]))
+                story.append(paragraph(f"Reason: {text(clause.get('reason'))}", styles["Normal"]))
+                story.append(paragraph(f"Consequences: {text(clause.get('consequences'))}", styles["Normal"]))
+                story.append(paragraph(f"Negotiation: {text(clause.get('negotiation'))}", styles["Normal"]))
+
+        obligations = content.get("obligations") or []
+        if obligations:
+            story.append(Paragraph("Obligations", heading_style))
+            for obligation in obligations:
+                due = f" (Due: {obligation.get('due')})" if obligation.get("due") else ""
+                story.append(paragraph(
+                    f"- {obligation.get('party', 'Party')}: {obligation.get('obligation', '')}{due}",
+                    styles["Normal"],
+                ))
+
+        dates = content.get("dates") or []
+        if dates:
+            story.append(Paragraph("Important Dates", heading_style))
+            for date in dates:
+                story.append(paragraph(
+                    f"- {date.get('label', 'Date')}: {date.get('date', '')} [{date.get('kind', 'review')}]",
+                    styles["Normal"],
+                ))
+
+        missing = content.get("missing") or []
+        if missing:
+            story.append(Paragraph("Missing or Weak Areas", heading_style))
+            story.extend(bullet_items(missing))
+
+        negotiation = content.get("negotiation") or []
+        if negotiation:
+            story.append(Paragraph("Negotiation Tips", heading_style))
+            story.extend(bullet_items(negotiation))
+    else:
+        for question, answer in content.items():
+            story.append(Paragraph(escape(text(question)), heading_style))
+            story.append(paragraph(answer, styles["Normal"]))
+            story.append(Spacer(1, 0.2 * inch))
 
     story.append(Spacer(1, 0.4 * inch))
     story.append(Paragraph(

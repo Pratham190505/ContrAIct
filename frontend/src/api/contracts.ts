@@ -92,5 +92,5 @@ export async function updateContractAnalysis(id: string, payload: unknown) {
 
 export async function deleteContract(id: string) {
   const { data } = await api.delete(`/api/contracts/${id}`);
-  return unwrap<{ deleted: boolean }>(data);
+  return unwrap<{ deleted: boolean; message?: string }>(data);
 }

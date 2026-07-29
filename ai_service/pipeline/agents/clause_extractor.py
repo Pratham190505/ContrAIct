@@ -21,12 +21,10 @@ import json
 import re
 from typing import List, Dict, Any
 
-from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_community.vectorstores import Chroma
 
-import config
-from pipeline.rag import run_contract_query
+from pipeline.llm_client import invoke_llm
 
 CLAUSE_CATEGORIES = [
     "Non-Compete",
@@ -91,9 +89,6 @@ def extract_clauses(
     Returns:
         List of clause dicts matching the frontend ClauseDTO shape
     """
-    llm   = ChatGroq(model=config.LLM_MODEL, temperature=0, groq_api_key=config.GROQ_API_KEY)
-    chain = CLAUSE_EXTRACTION_PROMPT | llm
-
     # Use first 8000 chars of raw text as primary context
     contract_excerpt = raw_text[:8000]
 
@@ -101,10 +96,11 @@ def extract_clauses(
 
     for clause_type in CLAUSE_CATEGORIES:
         try:
-            response = chain.invoke({
+            messages = CLAUSE_EXTRACTION_PROMPT.invoke({
                 "contract_text": contract_excerpt,
                 "clause_type":   clause_type,
             })
+            response = invoke_llm(messages, feature="legacy_clause_extraction", temperature=0)
 
             content = response.content.strip()
 
@@ -148,8 +144,6 @@ def extract_obligations(raw_text: str) -> List[Dict[str, Any]]:
     Extract party obligations from the contract.
     Returns list of {party, obligation, due} dicts.
     """
-    llm = ChatGroq(model=config.LLM_MODEL, temperature=0, groq_api_key=config.GROQ_API_KEY)
-
     prompt = ChatPromptTemplate.from_template("""
 You are a legal analyst extracting obligations from a contract.
 
@@ -168,8 +162,8 @@ Respond with ONLY a valid JSON array (no markdown):
 Respond with ONLY the JSON array.
 """)
 
-    chain    = prompt | llm
-    response = chain.invoke({"text": raw_text[:6000]})
+    messages = prompt.invoke({"text": raw_text[:6000]})
+    response = invoke_llm(messages, feature="legacy_obligations", temperature=0)
     content  = response.content.strip()
     content  = re.sub(r"```(?:json)?", "", content).strip()
 
@@ -189,8 +183,6 @@ def extract_dates(raw_text: str) -> List[Dict[str, Any]]:
     Extract important dates and deadlines from the contract.
     Returns list of {label, date, kind} dicts.
     """
-    llm = ChatGroq(model=config.LLM_MODEL, temperature=0, groq_api_key=config.GROQ_API_KEY)
-
     prompt = ChatPromptTemplate.from_template("""
 You are a legal analyst extracting important dates from a contract.
 
@@ -209,8 +201,8 @@ Respond with ONLY a valid JSON array (no markdown):
 Respond with ONLY the JSON array.
 """)
 
-    chain    = prompt | llm
-    response = chain.invoke({"text": raw_text[:6000]})
+    messages = prompt.invoke({"text": raw_text[:6000]})
+    response = invoke_llm(messages, feature="legacy_dates", temperature=0)
     content  = response.content.strip()
     content  = re.sub(r"```(?:json)?", "", content).strip()
 
@@ -222,8 +214,6 @@ Respond with ONLY the JSON array.
 
 def extract_missing_clauses(raw_text: str) -> List[str]:
     """Identify standard clauses that are missing from the contract."""
-    llm = ChatGroq(model=config.LLM_MODEL, temperature=0, groq_api_key=config.GROQ_API_KEY)
-
     prompt = ChatPromptTemplate.from_template("""
 You are a legal analyst reviewing a contract for completeness.
 
@@ -239,8 +229,8 @@ Respond with ONLY a JSON array of short strings (no markdown):
 If nothing is missing, return: []
 """)
 
-    chain    = prompt | llm
-    response = chain.invoke({"text": raw_text[:5000]})
+    messages = prompt.invoke({"text": raw_text[:5000]})
+    response = invoke_llm(messages, feature="legacy_missing_clauses", temperature=0)
     content  = response.content.strip()
     content  = re.sub(r"```(?:json)?", "", content).strip()
 

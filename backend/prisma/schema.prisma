@@ -47,12 +47,14 @@ model Contract {
   failureReason String?      @db.Text
   missing     String[]                         // missing clauses array
   negotiation String[]                         // negotiation tips array
+  analysisJson Json?                           // canonical structured analysis payload
 
   // Raw extracted text stored for re-analysis
   rawText     String?        @db.Text
 
   // File storage
   filePath    String                           // path on disk / object store key
+  fileHash    String?
   fileSize    Int            @default(0)       // bytes
   mimeType    String
 
@@ -67,6 +69,7 @@ model Contract {
   messages    ChatMessage[]
   reports     Report[]
 
+  @@unique([userId, fileHash])
   @@map("contracts")
 }
 

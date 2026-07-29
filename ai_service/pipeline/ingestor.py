@@ -11,6 +11,7 @@ retrieval is always scoped to a single document.
 import os
 import shutil
 import time
+import json
 from pathlib import Path
 from typing import List, Tuple
 
@@ -40,7 +41,27 @@ def extract_text_from_pdf(file_path: str) -> Tuple[str, int]:
     loader = PyPDFLoader(file_path)
     pages  = loader.load()
     full_text = "\n\n".join(p.page_content for p in pages)
+    if full_text.strip():
+        return full_text, len(pages)
+
+    print("[OCR FALLBACK] PDF text extraction returned no text; trying OCR")
+    ocr_text = extract_text_from_pdf_ocr(file_path)
+    if ocr_text.strip():
+        return ocr_text, len(pages)
+
     return full_text, len(pages)
+
+
+def extract_text_from_pdf_ocr(file_path: str) -> str:
+    """OCR a scanned PDF when normal text extraction fails."""
+    try:
+        import pytesseract
+        from pdf2image import convert_from_path
+    except ImportError:
+        return ""
+
+    images = convert_from_path(file_path)
+    return "\n\n".join(pytesseract.image_to_string(image) for image in images)
 
 
 def extract_text_from_docx(file_path: str) -> Tuple[str, int]:
@@ -126,19 +147,70 @@ def vectorstore_path(contract_id: str) -> str:
     return os.path.join(config.VECTORSTORE_BASE_DIR, contract_id)
 
 
-def build_vectorstore(chunks: List[Document], contract_id: str) -> Chroma:
+def cache_dir(document_hash: str | None) -> str | None:
+    if not document_hash:
+        return None
+    return os.path.join(config.CACHE_BASE_DIR, document_hash)
+
+
+def cached_text_path(document_hash: str | None) -> str | None:
+    directory = cache_dir(document_hash)
+    if not directory:
+        return None
+    return os.path.join(directory, "extracted_text.json")
+
+
+def cached_vectorstore_path(document_hash: str | None) -> str | None:
+    directory = cache_dir(document_hash)
+    if not directory:
+        return None
+    return os.path.join(directory, "vectorstore")
+
+
+def load_cached_text(document_hash: str | None) -> Tuple[str, int] | None:
+    path = cached_text_path(document_hash)
+    if not path or not os.path.exists(path):
+        return None
+    with open(path, "r", encoding="utf-8") as cache_file:
+        payload = json.load(cache_file)
+    return payload["rawText"], int(payload.get("pageCount", 0))
+
+
+def save_cached_text(document_hash: str | None, raw_text: str, page_count: int) -> None:
+    path = cached_text_path(document_hash)
+    if not path:
+        return
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as cache_file:
+        json.dump({"rawText": raw_text, "pageCount": page_count}, cache_file)
+
+
+def build_vectorstore(chunks: List[Document], contract_id: str, document_hash: str | None = None) -> Chroma:
     """Embed chunks and persist to disk under vectorstores/<contract_id>/."""
     vs_dir = vectorstore_path(contract_id)
+    cached_vs_dir = cached_vectorstore_path(document_hash)
 
     # Wipe existing store for this contract (re-ingest scenario)
     if os.path.exists(vs_dir):
         shutil.rmtree(vs_dir)
+
+    if cached_vs_dir and os.path.exists(cached_vs_dir):
+        shutil.copytree(cached_vs_dir, vs_dir)
+        print(f"[VECTORSTORE CACHE HIT] contractId={contract_id} documentHash={document_hash}")
+        return Chroma(
+            persist_directory=vs_dir,
+            embedding_function=get_embeddings(),
+        )
 
     vectorstore = Chroma.from_documents(
         documents=chunks,
         embedding=get_embeddings(),
         persist_directory=vs_dir,
     )
+    if cached_vs_dir:
+        if os.path.exists(cached_vs_dir):
+            shutil.rmtree(cached_vs_dir)
+        shutil.copytree(vs_dir, cached_vs_dir)
     return vectorstore
 
 
@@ -162,6 +234,7 @@ def ingest_contract(
     file_path: str,
     mime_type: str,
     contract_id: str,
+    document_hash: str | None = None,
 ) -> Tuple[str, int, Chroma]:
     """
     Full pipeline for a single contract:
@@ -174,9 +247,15 @@ def ingest_contract(
     """
     started_at = time.perf_counter()
 
-    ocr_started_at = time.perf_counter()
-    raw_text, page_count = extract_text(file_path, mime_type)
-    print(f"[OCR] contractId={contract_id} elapsed={time.perf_counter() - ocr_started_at:.2f}s")
+    cached_text = load_cached_text(document_hash)
+    if cached_text:
+        raw_text, page_count = cached_text
+        print(f"[TEXT CACHE HIT] contractId={contract_id} documentHash={document_hash}")
+    else:
+        extraction_started_at = time.perf_counter()
+        raw_text, page_count = extract_text(file_path, mime_type)
+        print(f"[TEXT EXTRACTION] contractId={contract_id} elapsed={time.perf_counter() - extraction_started_at:.2f}s")
+        save_cached_text(document_hash, raw_text, page_count)
 
     if not raw_text.strip():
         raise ValueError("No text could be extracted from the document.")
@@ -186,7 +265,7 @@ def ingest_contract(
     print(f"[CHUNKING] contractId={contract_id} elapsed={time.perf_counter() - chunking_started_at:.2f}s chunks={len(chunks)}")
 
     embeddings_started_at = time.perf_counter()
-    vectorstore = build_vectorstore(chunks, contract_id)
+    vectorstore = build_vectorstore(chunks, contract_id, document_hash)
     print(f"[EMBEDDINGS] contractId={contract_id} elapsed={time.perf_counter() - embeddings_started_at:.2f}s")
     print(f"[INGEST DONE] contractId={contract_id} elapsed={time.perf_counter() - started_at:.2f}s")
 

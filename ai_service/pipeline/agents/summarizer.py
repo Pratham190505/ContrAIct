@@ -8,9 +8,8 @@ Takes raw contract text → returns a 3-5 sentence summary covering:
   - Key obligations and restrictions
   - Any immediately notable red flags
 """
-from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
-import config
+from pipeline.llm_client import invoke_llm
 
 SUMMARIZER_PROMPT = ChatPromptTemplate.from_template("""
 You are ContrAIct, an AI legal assistant.
@@ -43,13 +42,11 @@ def generate_summary(raw_text: str) -> str:
     Returns:
         A 3-5 sentence plain-English summary string
     """
-    llm   = ChatGroq(model=config.LLM_MODEL, temperature=0, groq_api_key=config.GROQ_API_KEY)
-    chain = SUMMARIZER_PROMPT | llm
-
     # Truncate to first 6000 chars for summary (LLM context efficiency)
     truncated = raw_text[:6000]
     if len(raw_text) > 6000:
         truncated += "\n\n[... document continues ...]"
 
-    response = chain.invoke({"text": truncated})
+    messages = SUMMARIZER_PROMPT.invoke({"text": truncated})
+    response = invoke_llm(messages, feature="legacy_summary", temperature=0)
     return response.content.strip()

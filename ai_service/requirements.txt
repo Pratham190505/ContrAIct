@@ -24,6 +24,7 @@ pillow==10.3.0
 
 # OCR
 pytesseract==0.3.10
+pdf2image==1.17.0
 
 # PDF report generation
 reportlab==4.2.0
@@ -31,3 +32,4 @@ reportlab==4.2.0
 # Utilities
 tiktoken==0.7.0
 pydantic==2.7.4
+json-repair==0.29.8

@@ -11,6 +11,7 @@ const router = Router({ mergeParams: true });
 router.use(requireAuth);
 
 const AI_SERVICE = process.env.AI_SERVICE_URL ?? "http://localhost:8000";
+const REPORTS_DIR = path.resolve(process.cwd(), "reports");
 
 // ── GET /api/contracts/:id/report ────────────────────────────────────────────
 // Returns existing report or generates a new one
@@ -18,43 +19,58 @@ router.get("/", async (req: AuthRequest, res) => {
   try {
     const contract = await prisma.contract.findFirst({
       where: { id: req.params.id, userId: req.userId! },
+      include: {
+        clauses: true,
+        obligations: true,
+        dates: true,
+      },
     });
     if (!contract) return fail(res, "Contract not found", 404);
     if (contract.status !== "ANALYZED") {
       return fail(res, "Contract has not been analyzed yet", 422);
     }
 
-    // Check if report already exists
+    const storedAnalysis = buildStoredAnalysis(contract);
+
+    // Generate the report from saved analysis so downloads match the app's analysis view.
+    const aiRes = await axios.post(
+      `${AI_SERVICE}/report`,
+      {
+        contractId: req.params.id,
+        analysis: storedAnalysis,
+      },
+      { responseType: "arraybuffer" }
+    );
+
+    // Save PDF to disk
+    if (!fs.existsSync(REPORTS_DIR)) fs.mkdirSync(REPORTS_DIR, { recursive: true });
+
+    const reportPath = path.join(REPORTS_DIR, `${req.params.id}-report.pdf`);
+    fs.writeFileSync(reportPath, aiRes.data);
+
     const existing = await prisma.report.findFirst({
       where: { contractId: req.params.id },
       orderBy: { generatedAt: "desc" },
     });
 
-    if (existing && fs.existsSync(existing.filePath)) {
-      return res.download(existing.filePath, `${contract.name}-report.pdf`);
+    if (existing) {
+      await prisma.report.update({
+        where: { id: existing.id },
+        data: {
+          filePath: reportPath,
+          fileSize: aiRes.data.byteLength,
+          generatedAt: new Date(),
+        },
+      });
+    } else {
+      await prisma.report.create({
+        data: {
+          contractId: req.params.id,
+          filePath: reportPath,
+          fileSize: aiRes.data.byteLength,
+        },
+      });
     }
-
-    // Generate new report via AI service
-    const aiRes = await axios.post(
-      `${AI_SERVICE}/report`,
-      { contractId: req.params.id },
-      { responseType: "arraybuffer" }
-    );
-
-    // Save PDF to disk
-    const reportsDir = "reports";
-    if (!fs.existsSync(reportsDir)) fs.mkdirSync(reportsDir, { recursive: true });
-
-    const reportPath = path.join(reportsDir, `${req.params.id}-report.pdf`);
-    fs.writeFileSync(reportPath, aiRes.data);
-
-    await prisma.report.create({
-      data: {
-        contractId: req.params.id,
-        filePath: reportPath,
-        fileSize: aiRes.data.byteLength,
-      },
-    });
 
     return res.download(reportPath, `${contract.name}-report.pdf`);
   } catch (err) {
@@ -144,3 +160,45 @@ router.get("/all", async (req: AuthRequest, res) => {
 });
 
 export default router;
+
+function buildStoredAnalysis(contract: any) {
+  const analysisJson = contract.analysisJson && typeof contract.analysisJson === "object"
+    ? contract.analysisJson
+    : {};
+
+  return {
+    ...analysisJson,
+    name: contract.name,
+    type: analysisJson.type ?? contract.type,
+    party: analysisJson.party ?? contract.party,
+    pages: analysisJson.pages ?? contract.pages,
+    uploadedAt: contract.uploadedAt.toISOString(),
+    analyzedAt: contract.analyzedAt?.toISOString() ?? null,
+    riskScore: analysisJson.riskScore ?? contract.riskScore,
+    confidence: analysisJson.confidence ?? contract.confidence,
+    summary: analysisJson.summary ?? contract.summary ?? "",
+    clauses: analysisJson.clauses ?? contract.clauses.map((clause: any) => ({
+      title: clause.title,
+      category: clause.category,
+      original: clause.original,
+      plain: clause.plain,
+      risk: clause.risk,
+      reason: clause.reason,
+      consequences: clause.consequences,
+      negotiation: clause.negotiation,
+      confidence: clause.confidence,
+    })),
+    obligations: analysisJson.obligations ?? contract.obligations.map((obligation: any) => ({
+      party: obligation.party,
+      obligation: obligation.obligation,
+      due: obligation.due,
+    })),
+    dates: analysisJson.dates ?? contract.dates.map((date: any) => ({
+      label: date.label,
+      date: date.date,
+      kind: date.kind,
+    })),
+    missing: analysisJson.missing ?? contract.missing,
+    negotiation: analysisJson.negotiation ?? contract.negotiation,
+  };
+}
