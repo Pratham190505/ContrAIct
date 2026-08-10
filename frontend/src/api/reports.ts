@@ -23,5 +23,5 @@ export async function downloadReport(contractId: string) {
 
 export async function deleteReport(contractId: string) {
   const { data } = await api.delete(`/api/contracts/${contractId}/report`);
-  return unwrap<{ deleted: boolean }>(data);
+  return unwrap<{ deleted: boolean; message?: string }>(data);
 }

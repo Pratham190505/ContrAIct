@@ -70,10 +70,35 @@ function ReportsPage() {
       }
       toast.error(deleteError instanceof Error ? deleteError.message : "Failed to delete report");
     },
-    onSuccess: () => {
-      toast.success("Report deleted successfully.");
+    onSuccess: async (result, contractId) => {
+      queryClient.setQueryData<typeof contracts>(["contracts"], (current) =>
+        (current ?? []).filter((contract) => contract.id !== contractId),
+      );
+      queryClient.removeQueries({
+        predicate: (query) => query.queryKey.includes(contractId),
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["contracts"] }),
+        queryClient.invalidateQueries({ queryKey: ["analysis"] }),
+        queryClient.invalidateQueries({ queryKey: ["dashboard"] }),
+        queryClient.invalidateQueries({ queryKey: ["reports"] }),
+        queryClient.invalidateQueries({ queryKey: ["timeline"] }),
+        queryClient.invalidateQueries({ queryKey: ["chat"] }),
+        queryClient.invalidateQueries({ queryKey: ["obligations"] }),
+        queryClient.invalidateQueries({ queryKey: ["compare"] }),
+        queryClient.invalidateQueries({
+          predicate: (query) =>
+            ["contracts", "reports"].includes(String(query.queryKey[0])) ||
+            query.queryKey.includes(contractId),
+        }),
+      ]);
+      toast.success(result.message ?? "Contract and all associated analysis have been permanently deleted.");
       setDeleteTarget(null);
-      void navigate({ to: "/app/reports" });
+      if (selectedContractId === contractId) {
+        void navigate({ to: "/app/reports", search: {} });
+      } else {
+        void navigate({ to: "/app/reports" });
+      }
     },
   });
 
@@ -153,7 +178,7 @@ function ReportsPage() {
                     ) : (
                       <Trash2 className="mr-1.5 h-3.5 w-3.5" />
                     )}
-                    Delete Report
+                    Delete
                   </Button>
                 )}
               </div>
@@ -172,9 +197,9 @@ function ReportsPage() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete Report?</AlertDialogTitle>
+            <AlertDialogTitle>Delete Contract?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently remove the generated PDF report.
+              This permanently removes the contract, generated report, AI analysis, clauses, obligations, timeline, and chat history.
               <br />
               This action cannot be undone.
             </AlertDialogDescription>
@@ -196,7 +221,7 @@ function ReportsPage() {
                 {deleteMutation.isPending ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 ) : null}
-                Delete Report
+                Delete Contract
               </Button>
             </AlertDialogAction>
           </AlertDialogFooter>

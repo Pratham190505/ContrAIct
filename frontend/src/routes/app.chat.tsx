@@ -1,7 +1,7 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { Send, Bot, User as UserIcon, Trash2 } from "lucide-react";
+import { Send, Bot, User as UserIcon, Trash2, FileText } from "lucide-react";
 import { toast } from "sonner";
 import { contractSelectionSearchSchema } from "@/lib/contract-selection";
 
@@ -27,6 +27,7 @@ type Msg = ChatMessage;
 
 function ChatPage() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [draft, setDraft] = useState("");
   const [localMessages, setLocalMessages] = useState<Msg[]>([]);
   const { contractId: selectedContractId } = Route.useSearch();
@@ -35,10 +36,11 @@ function ChatPage() {
     queryFn: getContracts,
   });
   const contract = contracts.find((c) => c.id === selectedContractId) ?? contracts[0];
+  const canChat = contract?.status === "analyzed";
   const { data: messages = [], isError, error } = useQuery({
     queryKey: ["contracts", contract?.id, "chat"],
     queryFn: () => getChat(contract!.id),
-    enabled: Boolean(contract?.id),
+    enabled: Boolean(contract?.id && canChat),
   });
 
   useEffect(() => {
@@ -75,11 +77,17 @@ function ChatPage() {
   });
 
   const send = () => {
-    if (!draft.trim() || !contract) return;
+    if (!draft.trim() || !contract || !canChat) return;
     const userMessage: Msg = { role: "user", text: draft };
     setLocalMessages((cur) => [...cur, userMessage]);
     sendMutation.mutate(draft);
     setDraft("");
+  };
+
+  const selectContract = (contractId: string) => {
+    setLocalMessages([]);
+    setDraft("");
+    void navigate({ to: "/app/chat", search: { contractId } });
   };
 
   return (
@@ -94,8 +102,41 @@ function ChatPage() {
         </Button>
       </div>
 
+      <section className="mb-3 rounded-lg border bg-background p-3">
+        <label htmlFor="chat-contract" className="mb-2 block text-xs font-medium uppercase text-muted-foreground">
+          Selected contract
+        </label>
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+          <select
+            id="chat-contract"
+            value={contract?.id ?? ""}
+            onChange={(event) => selectContract(event.target.value)}
+            disabled={!contracts.length}
+            className="h-9 min-w-0 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm outline-none focus:ring-1 focus:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {!contract && <option value="">Choose a contract</option>}
+            {contracts.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+          {contract && (
+            <Badge variant={canChat ? "default" : "outline"} className="w-fit gap-1">
+              <FileText className="h-3.5 w-3.5" />
+              {canChat ? "Ready" : contract.status}
+            </Badge>
+          )}
+        </div>
+      </section>
+
       <Card className="flex-1 overflow-y-auto p-4">
         <div className="space-y-4">
+          {contract && !canChat && (
+            <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+              Chat will be available after this contract finishes analysis.
+            </div>
+          )}
           {localMessages.map((m, i) => (
             <div key={i} className={`flex gap-3 ${m.role === "user" ? "flex-row-reverse" : ""}`}>
               <div
@@ -135,9 +176,10 @@ function ChatPage() {
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && send()}
-          placeholder="Ask about a clause, deadline, or risk..."
+          placeholder={canChat ? "Ask about a clause, deadline, or risk..." : "Select an analyzed contract to chat..."}
+          disabled={!canChat}
         />
-        <Button onClick={send} className="brand-gradient text-primary-foreground" disabled={!contract || sendMutation.isPending}>
+        <Button onClick={send} className="brand-gradient text-primary-foreground" disabled={!canChat || sendMutation.isPending}>
           <Send className="h-4 w-4" />
         </Button>
       </div>

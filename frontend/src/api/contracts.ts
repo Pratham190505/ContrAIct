@@ -40,8 +40,10 @@ export type Contract = {
   negotiation: string[];
 };
 
-type BackendContract = Omit<Contract, "status"> & {
+type BackendContract = Omit<Contract, "status" | "missing" | "negotiation"> & {
   status: string;
+  missing?: string[] | string | null;
+  negotiation?: string[] | string | null;
 };
 
 function mapStatus(status: string): ContractStatus {
@@ -59,9 +61,22 @@ export function mapContract(contract: BackendContract): Contract {
     clauses: contract.clauses ?? [],
     obligations: contract.obligations ?? [],
     dates: contract.dates ?? [],
-    missing: contract.missing ?? [],
-    negotiation: contract.negotiation ?? [],
+    missing: toStringArray(contract.missing),
+    negotiation: toStringArray(contract.negotiation),
   };
+}
+
+function toStringArray(value: string[] | string | null | undefined) {
+  if (Array.isArray(value)) {
+    return value.filter((item) => item.trim().length > 0);
+  }
+
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? [trimmed] : [];
+  }
+
+  return [];
 }
 
 export async function getContracts() {
