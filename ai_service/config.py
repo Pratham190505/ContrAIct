@@ -21,14 +21,23 @@ if not GROQ_API_KEY:
     raise EnvironmentError("GROQ_API_KEY is not set. Copy .env.example to .env and add your key.")
 
 # ── Embeddings ────────────────────────────────────────────────────────────────
-EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+EMBEDDING_MODEL: str = os.getenv(
+    "EMBEDDING_MODEL",
+    "all-MiniLM-L6-v2",
+)
+
+HF_LOCAL_MODEL_PATH: str = os.getenv(
+    "HF_LOCAL_MODEL_PATH",
+    "",
+)
+
 
 # ── Retrieval ─────────────────────────────────────────────────────────────────
 CHUNK_SIZE: int         = int(os.getenv("CHUNK_SIZE", 800))
 CHUNK_OVERLAP: int      = int(os.getenv("CHUNK_OVERLAP", 100))
 TOP_K: int              = int(os.getenv("TOP_K", 6))
-MAX_RETRY_ATTEMPTS: int = min(int(os.getenv("MAX_RETRY_ATTEMPTS", 2)), 2)
-ANALYSIS_TOP_K: int     = int(os.getenv("ANALYSIS_TOP_K", 14))
+MAX_RETRY_ATTEMPTS: int = min(int(os.getenv("MAX_RETRY_ATTEMPTS", 1)),1)
+ANALYSIS_TOP_K: int     = int(os.getenv("ANALYSIS_TOP_K", 8))
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR             = os.path.dirname(__file__)

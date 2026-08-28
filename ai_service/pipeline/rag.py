@@ -158,6 +158,7 @@ def make_critic_node():
             "grade":      verdict,
             "grounded":   grounded,
             "confidence": confidence,
+            "done":       grounded,
             "trace":      state.get("trace", []) + [f"Critic verdict: {verdict}"],
         }
 
@@ -165,36 +166,53 @@ def make_critic_node():
 
 
 def make_reformulator_node():
+
     def reformulate(state: ContractRAGState) -> dict:
+
         attempts = state.get("attempts", 0)
 
-        if attempts >= min(config.MAX_RETRY_ATTEMPTS, 2):
+        if attempts >= config.MAX_RETRY_ATTEMPTS:
             return {
-                "answer":     "This contract does not address that topic with sufficient detail.",
-                "done":       True,
-                "grounded":   False,
+                "answer": (
+                    "This contract does not address that topic "
+                    "with sufficient detail."
+                ),
+                "done": True,
+                "grounded": False,
                 "confidence": 0.1,
-                "trace":      state.get("trace", []) + ["Max retries reached — exiting"],
+                "trace": state.get("trace", []) + [
+                    "Max retries reached — exiting"
+                ],
             }
 
-        context  = "\n\n---\n\n".join(d.page_content for d in state["documents"])
+        context = "\n\n---\n\n".join(
+            d.page_content for d in state["documents"]
+        )
+
         messages = REFORMULATION_PROMPT.invoke({
             "question": state["question"],
-            "context":  context,
-            "answer":   state["answer"],
+            "context": context,
+            "answer": state["answer"],
         })
-        response = invoke_llm(messages, feature="chat_reformulate", temperature=0.3)
+
+        response = invoke_llm(
+            messages,
+            feature="chat_reformulate",
+            temperature=0.3,
+        )
+
         new_question = response.content.strip()
 
         return {
             "question": new_question,
             "attempts": attempts + 1,
-            "done":     False,
-            "trace":    state.get("trace", []) + [f"Reformulated to: '{new_question}'"],
+            "done": False,
+            "trace": state.get("trace", []) + [
+                f"Reformulated to: '{new_question}'"
+            ],
         }
 
     return reformulate
-
 
 # ── Graph builder ──────────────────────────────────────────────────────────────
 

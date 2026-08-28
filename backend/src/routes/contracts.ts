@@ -11,11 +11,11 @@ import { upload } from "../middleware/upload";
 import { logger } from "../config/logger";
 import { mapContract } from "../utils/contractMapper";
 import { ok, fail } from "../utils/response";
+import { deleteContractEverywhere } from "../services/contractDeletionService";
 
 const router = Router();
 
 const AI_SERVICE = process.env.AI_SERVICE_URL ?? "http://localhost:8000";
-const DELETE_SUCCESS_MESSAGE = "Contract and all associated analysis have been permanently deleted.";
 
 const RiskLevelSchema = z.enum(["low", "medium", "high"]);
 const DateKindSchema = z.enum(["renewal", "expiry", "payment", "review"]);
@@ -45,6 +45,12 @@ const DateSchema = z.object({
   kind: DateKindSchema,
 });
 
+const StringArraySchema = z.preprocess((value) => {
+  if (Array.isArray(value)) return value;
+  if (typeof value === "string") return value.trim() ? [value] : [];
+  return value;
+}, z.array(z.string()).default([]));
+
 const AnalysisCallbackSchema = z.object({
   type: z.string().min(1),
   party: z.string().min(1),
@@ -52,8 +58,8 @@ const AnalysisCallbackSchema = z.object({
   riskScore: z.number().int().min(0).max(100),
   confidence: z.number().min(0).max(1),
   summary: z.string(),
-  missing: z.array(z.string()).default([]),
-  negotiation: z.array(z.string()).default([]),
+  missing: StringArraySchema,
+  negotiation: StringArraySchema,
   rawText: z.string(),
   clauses: z.array(ClauseSchema).default([]),
   obligations: z.array(ObligationSchema).default([]),
@@ -196,7 +202,8 @@ router.patch("/:id/analysis", requireAIService, async (req, res) => {
       return ok(res, mapContract(failed));
     }
 
-    const parsed = AnalysisCallbackSchema.safeParse(req.body);
+    const normalizedBody = normalizeAnalysisCallbackInput(req.body, contractId);
+    const parsed = AnalysisCallbackSchema.safeParse(normalizedBody);
     if (!parsed.success) {
       const flattened = parsed.error.flatten();
       const validationErrors = {
@@ -261,14 +268,38 @@ router.patch("/:id/analysis", requireAIService, async (req, res) => {
         });
       }
 
-      return tx.contract.findUnique({
+      const savedCounts = {
+        clauses: await tx.clause.count({ where: { contractId } }),
+        obligations: await tx.obligation.count({ where: { contractId } }),
+        dates: await tx.contractDate.count({ where: { contractId } }),
+      };
+
+      const savedContract = await tx.contract.findUnique({
         where: { id: contractId },
         include: { clauses: true, obligations: true, dates: true },
       });
+
+      return { savedContract, savedCounts };
     });
 
-    logger.info("[CONTRACT UPDATED]", { contractId, status: "ANALYZED" });
-    return ok(res, mapContract(updated!));
+    const { savedContract, savedCounts } = updated;
+
+    logger.info("[CONTRACT UPDATED]", {
+      contractId,
+      status: "ANALYZED",
+      clausesSaved: savedCounts.clauses,
+      obligationsSaved: savedCounts.obligations,
+      datesSaved: savedCounts.dates,
+      negotiationTips: negotiation.length,
+      missingClauses: missing.length,
+    });
+    if (obligations.length > 0 && savedCounts.obligations === 0) {
+      logger.warn("[AI CALLBACK SAVE WARNING]", { contractId, table: "obligations", expected: obligations.length, saved: 0 });
+    }
+    if (dates.length > 0 && savedCounts.dates === 0) {
+      logger.warn("[AI CALLBACK SAVE WARNING]", { contractId, table: "contract_dates", expected: dates.length, saved: 0 });
+    }
+    return ok(res, mapContract(savedContract!));
   } catch (err) {
     logger.error("[AI CALLBACK FAILED]", {
       contractId,
@@ -282,169 +313,21 @@ router.patch("/:id/analysis", requireAIService, async (req, res) => {
 router.delete("/:id", requireAuth, async (req: AuthRequest, res) => {
   const contractId = req.params.id;
   const userId = req.userId!;
-  const startedAt = Date.now();
 
   try {
-    const contract = await prisma.contract.findFirst({
-      where: { id: contractId, userId },
-      include: { reports: true },
-    });
-    if (!contract) return fail(res, "Contract not found", 404);
-
-    const reportPaths = contract.reports.map((report) => report.filePath);
-    const uploadedPath = contract.filePath;
-    const documentHash = contract.fileHash;
-
-    const deletedRecords = await prisma.$transaction(async (tx) => {
-      const chatMessages = await tx.chatMessage.deleteMany({ where: { contractId } });
-      const clauses = await tx.clause.deleteMany({ where: { contractId } });
-      const obligations = await tx.obligation.deleteMany({ where: { contractId } });
-      const dates = await tx.contractDate.deleteMany({ where: { contractId } });
-      const reports = await tx.report.deleteMany({ where: { contractId } });
-      await tx.contract.delete({ where: { id: contractId } });
-
-      return {
-        chatMessages: chatMessages.count,
-        clauses: clauses.count,
-        obligations: obligations.count,
-        dates: dates.count,
-        reports: reports.count,
-        contracts: 1,
-      };
-    });
-
-    const cleanup = await cleanupContractResources({
-      contractId,
-      userId,
-      uploadedPath,
-      reportPaths,
-      documentHash,
-    });
-
-    logger.info("[CONTRACT DELETE]", {
-      contractId,
-      userId,
-      deletedRecords,
-      deletedPdf: cleanup.uploadedPdf.deleted,
-      deletedReports: cleanup.reports.deleted,
-      deletedCache: cleanup.aiService.cacheDeleted,
-      deletedEmbeddings: cleanup.aiService.embeddingsDeleted,
-      elapsedMs: Date.now() - startedAt,
-    });
-
-    return ok(res, {
-      deleted: true,
-      message: DELETE_SUCCESS_MESSAGE,
-      deletedRecords,
-    });
+    const result = await deleteContractEverywhere({ contractId, userId });
+    if (!result) return fail(res, "Contract not found", 404);
+    return ok(res, result);
   } catch (err) {
     logger.error("[contracts/delete]", {
       contractId,
       userId,
       error: err instanceof Error ? err.message : err,
       stack: err instanceof Error ? err.stack : undefined,
-      elapsedMs: Date.now() - startedAt,
     });
     return fail(res, "Delete failed", 500);
   }
 });
-
-type CleanupInput = {
-  contractId: string;
-  userId: string;
-  uploadedPath: string;
-  reportPaths: string[];
-  documentHash: string | null;
-};
-
-type CleanupResult = {
-  uploadedPdf: { deleted: boolean };
-  reports: { deleted: number };
-  aiService: { cacheDeleted: number; embeddingsDeleted: boolean };
-};
-
-async function cleanupContractResources(input: CleanupInput): Promise<CleanupResult> {
-  const uploadDir = path.resolve(process.env.UPLOAD_DIR ?? "uploads");
-  const reportCandidates = [
-    ...input.reportPaths,
-    path.resolve(process.cwd(), "reports", `${input.contractId}-report.pdf`),
-  ];
-
-  const fsTasks = [
-    removePathBestEffort(input.uploadedPath, "uploadedPdf", input.contractId, input.userId),
-    ...uniqueStrings(reportCandidates).map((reportPath) =>
-      removePathBestEffort(reportPath, "generatedReport", input.contractId, input.userId),
-    ),
-    removePathBestEffort(path.join(uploadDir, input.contractId), "uploadFolder", input.contractId, input.userId),
-    removePathBestEffort(path.join(uploadDir, "tmp", input.contractId), "tmpUploadFolder", input.contractId, input.userId),
-    removePathBestEffort(path.join(uploadDir, "ocr", input.contractId), "ocrTempFolder", input.contractId, input.userId),
-    removePathBestEffort(path.join(uploadDir, "previews", input.contractId), "previews", input.contractId, input.userId),
-    removePathBestEffort(path.join(uploadDir, "thumbnails", input.contractId), "thumbnails", input.contractId, input.userId),
-  ];
-
-  const [uploadedPdf, ...otherFileResults] = await Promise.all(fsTasks);
-  const aiCleanup = await cleanupAIResources(input.contractId, input.documentHash, input.userId);
-
-  return {
-    uploadedPdf: { deleted: uploadedPdf.deleted },
-    reports: {
-      deleted: otherFileResults.filter((result) => result.label === "generatedReport" && result.deleted).length,
-    },
-    aiService: aiCleanup,
-  };
-}
-
-async function removePathBestEffort(filePath: string | null | undefined, label: string, contractId: string, userId: string) {
-  if (!filePath) return { label, deleted: false, missing: true };
-
-  const target = path.resolve(filePath);
-  try {
-    await fs.access(target);
-    await fs.rm(target, { recursive: true, force: true });
-    return { label, deleted: true, path: target };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { label, deleted: false, missing: true, path: target };
-    }
-    logger.warn("[CONTRACT DELETE FILE WARNING]", {
-      contractId,
-      userId,
-      label,
-      path: target,
-      error: error instanceof Error ? error.message : error,
-    });
-    return { label, deleted: false, path: target, error };
-  }
-}
-
-async function cleanupAIResources(contractId: string, documentHash: string | null, userId: string) {
-  try {
-    const response = await axios.post(
-      `${AI_SERVICE}/cleanup`,
-      { contractId, documentHash },
-      {
-        timeout: 15000,
-        headers: { "x-ai-secret": process.env.AI_SERVICE_SECRET ?? "" },
-      },
-    );
-    const resources = Array.isArray(response.data?.resources) ? response.data.resources : [];
-    return {
-      cacheDeleted: resources.filter((item: any) => item.label === "cache" && item.deleted).length,
-      embeddingsDeleted: resources.some((item: any) => item.label === "vectorstore" && item.deleted),
-    };
-  } catch (error) {
-    logger.warn("[CONTRACT DELETE AI CLEANUP WARNING]", {
-      contractId,
-      userId,
-      error: error instanceof Error ? error.message : error,
-    });
-    return { cacheDeleted: 0, embeddingsDeleted: false };
-  }
-}
-
-function uniqueStrings(values: Array<string | null | undefined>) {
-  return Array.from(new Set(values.filter((value): value is string => Boolean(value))));
-}
 
 async function computeFileHash(filePath: string) {
   const file = await fs.readFile(filePath);
@@ -459,6 +342,40 @@ async function triggerAnalysis(contractId: string, filePath: string, mimeType: s
     documentHash,
     callbackUrl: `${process.env.BACKEND_URL ?? "http://localhost:5000"}/api/contracts/${contractId}/analysis`,
   });
+}
+
+function normalizeAnalysisCallbackInput(body: unknown, contractId: string) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return body;
+  }
+
+  const source = body as Record<string, unknown>;
+  const normalized: Record<string, unknown> = { ...source };
+  const aliases: Record<string, string[]> = {
+    riskScore: ["risk_score", "risk"],
+    obligations: ["extractedObligations", "duties"],
+    dates: ["contractDates", "timeline", "keyDates"],
+    negotiation: ["negotiationTips", "tips"],
+    missing: ["missingClauses", "missing_clauses"],
+    clauses: ["riskyClauses", "extractedClauses"],
+  };
+
+  for (const [canonical, alternatives] of Object.entries(aliases)) {
+    if (normalized[canonical] !== undefined) continue;
+    const alias = alternatives.find((key) => source[key] !== undefined);
+    if (alias) {
+      normalized[canonical] = source[alias];
+      logger.warn("[AI CALLBACK FIELD ALIAS]", { contractId, expected: canonical, received: alias });
+    }
+  }
+
+  for (const key of ["obligations", "dates", "negotiation", "missing", "clauses"]) {
+    if (normalized[key] === undefined) {
+      logger.warn("[AI CALLBACK MISSING FIELD]", { contractId, field: key });
+    }
+  }
+
+  return normalized;
 }
 
 export default router;

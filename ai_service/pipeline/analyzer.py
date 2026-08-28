@@ -12,7 +12,7 @@ from typing import Any, Dict, Literal
 
 from langchain_community.vectorstores import Chroma
 from langchain_core.prompts import ChatPromptTemplate
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 try:
     from json_repair import repair_json
@@ -20,36 +20,32 @@ except ImportError:
     repair_json = None
 
 import config
-from pipeline.llm_client import get_upload_call_count, invoke_llm, reset_upload_call_count
+from pipeline.agents.clause_extractor import extract_dates, extract_obligations
+from pipeline.llm_client import get_upload_call_count, invoke_llm, is_tool_use_failed, reset_upload_call_count
 
 
 MAX_CONTEXT_CHARS = 6000
 MAX_TEXT_EXCERPT_CHARS = 3000
 RETRY_CONTEXT_CHARS = 2500
 RETRY_TEXT_EXCERPT_CHARS = 1500
-MAX_ANALYSIS_CLAUSES = 10
+MAX_ANALYSIS_CLAUSES = 6
 MAX_ORIGINAL_EXCERPT_CHARS = 150
-MAX_COMPLETION_TOKENS = 1200
+MAX_COMPLETION_TOKENS = 3500
 
 
 class ClausePayload(BaseModel):
     title: str = Field(default="Clause")
-    category: Literal[
-        "Termination",
-        "IP",
-        "Compensation",
-        "Confidentiality",
-        "Restrictions",
-        "Liability",
-        "Dispute Resolution",
-        "Other",
-    ] = "Other"
-    original: str = Field(default="", max_length=MAX_ORIGINAL_EXCERPT_CHARS)
+    # Keep this as a string at the provider schema level so a model
+    # using a synonym such as "Indemnification" cannot cause a Groq
+    # schema-validation 400. It is normalized to the allowed UI
+    # categories in _normalize_analysis_payload().
+    category: str = "Other"
+    original: str = ""
     plain: str = ""
     risk: Literal["low", "medium", "high"] = "medium"
-    reason: str = Field(default="", max_length=280)
-    consequences: str = Field(default="", max_length=280)
-    negotiation: str = Field(default="", max_length=280)
+    reason: str = ""
+    consequences: str = ""
+    negotiation: str = ""
     confidence: float = Field(default=0.75, ge=0, le=1)
 
 
@@ -114,7 +110,27 @@ def extract_party_name(raw_text: str) -> str:
 ANALYSIS_PROMPT = ChatPromptTemplate.from_template("""
 You are ContrAIct, a careful legal analyst. Analyze the contract using the provided retrieved context and text excerpt.
 
-Return ONLY one valid JSON object. Do not use markdown. Keep the whole response under 1200 tokens.
+Return ONLY compact valid JSON. No markdown.
+
+Return ALL 8 keys:
+summary, riskScore, confidence, clauses, obligations, dates, missing, negotiation.
+
+Always include every key.
+For empty arrays use [].
+
+Maximum 6 clauses.
+Keep all text concise.
+Complete the entire JSON object before stopping.
+
+IMPORTANT:
+- Return a complete JSON object.
+- Always return ALL 8 top-level keys:
+  summary, riskScore, confidence, clauses, obligations, dates, missing, negotiation.
+- Never omit any key.
+- If an array has no data, return [].
+- Keep clauses to a maximum of 6.
+- Keep each clause concise.
+- Ensure the JSON is valid and complete before finishing.
 
 Required schema:
 {{
@@ -128,9 +144,9 @@ Required schema:
       "original": "<short clause excerpt, max 150 chars>",
       "plain": "<plain-English explanation>",
       "risk": "<low|medium|high>",
-      "reason": "<why this risk level was assigned, max 40 words>",
-      "consequences": "<what happens if signed as-is, max 40 words>",
-      "negotiation": "<how to improve this clause, max 40 words>",
+      "reason": "<why this risk level was assigned, max 25 words>",
+      "consequences": "<what happens if signed as-is, max 25 words>",
+      "negotiation": "<how to improve this clause, max 25 words>",
       "confidence": <number 0.0-1.0>
     }}
   ],
@@ -144,16 +160,28 @@ Required schema:
   "negotiation": ["<top negotiation tip>"]
 }}
 
+CATEGORY RULES (VERY IMPORTANT):
+- category MUST be exactly one of: Termination, IP, Compensation, Confidentiality, Restrictions, Liability, Dispute Resolution, Other.
+- Never use a category such as Indemnification, NDA, Non-Compete, Governing Law, or Payment Terms.
+- For indemnification clauses, use category "Liability".
+- For limitation-of-liability clauses, use category "Liability".
+- For NDA/confidentiality clauses, use category "Confidentiality".
+- For non-compete/non-solicitation clauses, use category "Restrictions".
+- For governing-law clauses, use category "Other" unless they are primarily about dispute resolution, in which case use "Dispute Resolution".
+- The title may use the specific clause name (for example "Indemnification"); only category is restricted.
+
 Rules:
 - Include only clauses present in the contract.
 - Prioritize high-impact legal and commercial terms.
-- Return at most 10 clauses.
+- Return at most 6 clauses.
 - Return high and medium risk clauses first; include low risk only if fewer than 10 high/medium clauses exist.
 - Do not include full clause text. Use only a short excerpt in "original".
 - Summary must be max 3 sentences.
 - Reason, consequences, and negotiation must each be max 40 words.
 - Use "medium" risk if risk is unclear.
-- Use [] when no items are found.
+- ALWAYS include obligations, dates, missing, and negotiation, even when empty.
+- Use [] for any array with no items.
+- Complete the entire JSON object before stopping.
 - Date kind must be one of: renewal, expiry, payment, review.
 - Clause risk must be one of: low, medium, high.
 
@@ -172,7 +200,15 @@ RETRY_ANALYSIS_PROMPT = ChatPromptTemplate.from_template("""
 Return ONLY compact valid JSON for this contract analysis. No markdown. Under 900 tokens.
 
 Schema keys: summary, riskScore, confidence, clauses, obligations, dates, missing, negotiation.
-Clauses: max 10, high/medium first, low only if needed. Each clause has title, category, original, plain, risk, reason, consequences, negotiation, confidence.
+
+IMPORTANT:
+Return ALL 8 keys.
+Never omit any key.
+If an array has no items, return [].
+The response is invalid if obligations, dates, missing, or negotiation are omitted.
+Complete the JSON object before stopping.
+Clauses: max 6, high/medium first, low only if needed. Each clause has title, category, original, plain, risk, reason, consequences, negotiation, confidence.
+Category MUST be exactly one of: Termination, IP, Compensation, Confidentiality, Restrictions, Liability, Dispute Resolution, Other. For indemnification or limitation-of-liability use Liability; for NDA use Confidentiality; for non-compete/non-solicitation use Restrictions; for other unsupported categories use Other. The title may remain specific.
 Limits: summary max 3 sentences; original max 150 chars; reason/consequences/negotiation max 40 words each.
 Use [] for missing arrays. Use medium when unsure.
 
@@ -292,6 +328,47 @@ def _limit_sentences(value: Any, limit: int) -> str:
     return " ".join(sentence for sentence in sentences[:limit] if sentence).strip()
 
 
+ALLOWED_CATEGORIES = {
+    "Termination",
+    "IP",
+    "Compensation",
+    "Confidentiality",
+    "Restrictions",
+    "Liability",
+    "Dispute Resolution",
+    "Other",
+}
+
+CATEGORY_ALIASES = {
+    "indemnification": "Liability",
+    "indemnity": "Liability",
+    "limitation of liability": "Liability",
+    "liability / indemnification": "Liability",
+    "liability and indemnification": "Liability",
+    "nda": "Confidentiality",
+    "non-disclosure": "Confidentiality",
+    "non disclosure": "Confidentiality",
+    "confidentiality / nda": "Confidentiality",
+    "non-compete": "Restrictions",
+    "non compete": "Restrictions",
+    "non-solicitation": "Restrictions",
+    "non solicitation": "Restrictions",
+    "restrictions": "Restrictions",
+    "payment": "Compensation",
+    "payment terms": "Compensation",
+    "salary": "Compensation",
+    "arbitration": "Dispute Resolution",
+    "dispute resolution / arbitration": "Dispute Resolution",
+    "governing law": "Other",
+}
+
+def _normalize_category(value: Any) -> str:
+    category = " ".join(str(value or "").split()).strip()
+    if category in ALLOWED_CATEGORIES:
+        return category
+    return CATEGORY_ALIASES.get(category.lower(), "Other")
+
+
 def _normalize_analysis_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     clauses = []
     for clause in payload.get("clauses") or []:
@@ -305,7 +382,7 @@ def _normalize_analysis_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             risk = "medium"
         clauses.append({
             "title": str(clause.get("title") or clause.get("category") or "Clause"),
-            "category": str(clause.get("category") or "Other"),
+            "category": _normalize_category(clause.get("category")),
             "original": original,
             "plain": str(clause.get("plain") or "No plain-English explanation provided."),
             "risk": risk,
@@ -366,6 +443,55 @@ def _normalize_analysis_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _normalize_legacy_obligations(items: Any) -> list[Dict[str, Any]]:
+    obligations: list[Dict[str, Any]] = []
+    if not isinstance(items, list):
+        return obligations
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        obligation_text = str(item.get("obligation") or "").strip()
+        if not obligation_text:
+            continue
+
+        normalized: Dict[str, Any] = {
+            "party": str(item.get("party") or "Party"),
+            "obligation": obligation_text,
+        }
+        due = item.get("due")
+        if due not in (None, "null", "None", "N/A", ""):
+            normalized["due"] = str(due)
+        obligations.append(normalized)
+
+    return obligations
+
+
+def _normalize_legacy_dates(items: Any) -> list[Dict[str, Any]]:
+    dates: list[Dict[str, Any]] = []
+    if not isinstance(items, list):
+        return dates
+
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        value = str(item.get("date") or "").strip()
+        if not value:
+            continue
+
+        kind = str(item.get("kind") or "review")
+        if kind not in ("renewal", "expiry", "payment", "review"):
+            kind = "review"
+
+        dates.append({
+            "label": str(item.get("label") or "Important date"),
+            "date": value,
+            "kind": kind,
+        })
+
+    return dates
+
+
 def _build_analysis_messages(
     prompt: ChatPromptTemplate,
     contract_type: str,
@@ -383,6 +509,42 @@ def _build_analysis_messages(
     })
 
 
+def _invoke_structured_analysis(messages: Any) -> Any:
+    return invoke_llm(
+        messages,
+        feature="contract_analysis",
+        temperature=0,
+        max_tokens=MAX_COMPLETION_TOKENS,
+        structured_schema=AnalysisPayload,
+    )
+
+
+def _invoke_json_fallback(messages: Any) -> Any:
+    print("[LLM] Falling back to strict JSON mode")
+    return invoke_llm(
+        messages,
+        feature="contract_analysis_json_fallback",
+        temperature=0,
+        max_tokens=MAX_COMPLETION_TOKENS,
+    )
+
+
+def _parse_and_validate_analysis_response(
+    response: Any,
+    *,
+    used_json_fallback: bool,
+) -> Dict[str, Any]:
+    if _is_truncated(response):
+        raise ValueError(f"LLM response truncated: finish_reason={_finish_reason(response)}")
+
+    parsed = _parse_json_object(response)
+    if used_json_fallback:
+        validated = AnalysisPayload.model_validate(parsed)
+        parsed = validated.model_dump()
+        print("[LLM] Fallback succeeded")
+    return parsed
+
+
 def _run_analysis_llm(
     contract_type: str,
     party_name: str,
@@ -394,6 +556,7 @@ def _run_analysis_llm(
         (RETRY_ANALYSIS_PROMPT, RETRY_CONTEXT_CHARS, RETRY_TEXT_EXCERPT_CHARS),
     ]
     last_error: Exception | None = None
+    use_json_fallback = False
 
     for retry_count, (prompt, context_limit, text_limit) in enumerate(attempts):
         messages = _build_analysis_messages(
@@ -405,18 +568,27 @@ def _run_analysis_llm(
             context_limit,
             text_limit,
         )
-        response = invoke_llm(
-            messages,
-            feature="contract_analysis",
-            temperature=0,
-            max_tokens=MAX_COMPLETION_TOKENS,
-            structured_schema=AnalysisPayload,
-        )
+
+        response: Any | None = None
+        if not use_json_fallback:
+            try:
+                response = _invoke_structured_analysis(messages)
+            except Exception as error:
+                if is_tool_use_failed(error):
+                    print("[LLM] Structured tool call failed")
+                    use_json_fallback = True
+                else:
+                    raise
+
+        if use_json_fallback:
+            response = _invoke_json_fallback(messages)
+
         try:
-            if _is_truncated(response):
-                raise ValueError(f"LLM response truncated: finish_reason={_finish_reason(response)}")
-            return _parse_json_object(response), retry_count
-        except (json.JSONDecodeError, TypeError, ValueError) as error:
+            return _parse_and_validate_analysis_response(
+                response,
+                used_json_fallback=use_json_fallback,
+            ), retry_count
+        except (json.JSONDecodeError, TypeError, ValueError, ValidationError) as error:
             last_error = error
             if retry_count == 0:
                 print(f"[analyzer] Retrying with shorter prompt after parse/truncation issue: {error}")
@@ -464,6 +636,18 @@ def run_full_analysis(
     print("[analyzer] Running primary structured analysis LLM call...")
     payload, retry_count = _run_analysis_llm(contract_type, party_name, retrieved_context, raw_text)
     structured = _normalize_analysis_payload(payload)
+
+    if not structured["obligations"]:
+        legacy_obligations = _normalize_legacy_obligations(extract_obligations(raw_text))
+        if legacy_obligations:
+            print(f"[analyzer] Legacy obligation fallback recovered {len(legacy_obligations)} items for contract {contract_id}")
+            structured["obligations"] = legacy_obligations
+
+    if not structured["dates"]:
+        legacy_dates = _normalize_legacy_dates(extract_dates(raw_text))
+        if legacy_dates:
+            print(f"[analyzer] Legacy date fallback recovered {len(legacy_dates)} items for contract {contract_id}")
+            structured["dates"] = legacy_dates
 
     result = {
         "type": contract_type,

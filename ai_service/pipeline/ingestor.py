@@ -30,7 +30,10 @@ _embeddings: HuggingFaceEmbeddings | None = None
 def get_embeddings() -> HuggingFaceEmbeddings:
     global _embeddings
     if _embeddings is None:
-        _embeddings = HuggingFaceEmbeddings(model_name=config.EMBEDDING_MODEL)
+        _embeddings = HuggingFaceEmbeddings(
+        model_name=config.HF_LOCAL_MODEL_PATH or config.EMBEDDING_MODEL,
+        model_kwargs={"local_files_only": True},
+    )
     return _embeddings
 
 
